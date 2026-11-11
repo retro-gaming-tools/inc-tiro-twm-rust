@@ -306,6 +306,10 @@ pub fn run(game: &'static Game) {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let mut settings = settings_from_arguments(game, &arguments);
     if host::launcher::wanted(&arguments) {
+        // The launcher guesses no folder: it shows the one saved last time, or none to choose.
+        if !arguments.iter().any(|argument| !argument.starts_with("--")) {
+            settings.folder = String::new();
+        }
         match host::launcher::show(game, settings) {
             host::launcher::Outcome::Start(chosen) => settings = chosen,
             host::launcher::Outcome::Quit => std::process::exit(0),
