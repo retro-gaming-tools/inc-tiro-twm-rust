@@ -1,0 +1,16 @@
+[package]
+name = "incubation-rust"
+version = "0.5.0-beta"
+edition = "2021"
+
+[dependencies]
+recomp-runtime = { path = "runtime" }
+
+[profile.release]
+opt-level = 2
+codegen-units = 256
+debug = false
+panic = "unwind"
+
+[profile.release.package.recomp-runtime]
+opt-level = 3

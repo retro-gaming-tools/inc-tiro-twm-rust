@@ -1,0 +1,13 @@
+[package]
+name = "recomp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+iced-x86 = "=1.21.0"
+sha2 = "=0.10.8"
+libc = "0.2"
+lewton = "=0.10.2"
+
+[profile.release]
+debug = false

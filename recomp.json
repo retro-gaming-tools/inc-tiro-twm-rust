@@ -1,0 +1,35 @@
+{
+  "name": "incubation",
+  "title": "Incubation",
+  "needs": "the GOG release of Battle Isle: Incubation, version 1.52e",
+  "recompVersion": "0.5-beta",
+  "recompRepo": "retro-gaming-tools/inc-tiro-twm-rust",
+  "recompCommand": "Incubation.exe -english -3dfx",
+  "recompPatches": [
+    "Incubation.exe 4499b4 750355eb026a01 ff35f00f400090"
+  ],
+  "recompSwitches": {
+    "--addon": "400ff0 Wilderness Missions"
+  },
+  "recompRenderers": [
+    "-3dfx Glide",
+    "-directx Software"
+  ],
+  "recompLanguages": [
+    "-english English",
+    "-german German"
+  ],
+  "recompMusic": [
+    "music/Track 514274=1",
+    "music/Arack"
+  ],
+  "recompFiles": {
+    "Incubation.exe": "b07aa2478fbfaf252a585cff180d03b468d5141e0fdb5606bd09f0891024fcc9",
+    "NewToolsR.dll": "8b0b27626bc26e54742ab41deef740772fc935286f83c3cfbd960d1a8035432d",
+    "MSVCRT.DLL": "3a4cb4631f9ecd6f3f6013bc0459fca2e305a0ad00dbf34cb46e6f52d96d9d62",
+    "msvcirt.dll": "e95f8644a520dd35808a0f3b08de270bf18f82d9f60327314d23c0c2acb27c54",
+    "ENGWLIB.DLL": "df3849404142510b050f0b458300300ec108cadeae865ef3fd8e66de559cd120",
+    "ENG3DFX.DLL": "e0109d27e034c3e617c6322e19e8fa3665c2bc0e9914732833dceb308d20f016",
+    "Eng3d.dll": "0bd5bd242a4a22fde5b61da55b5ba373cf5ab5fe9079a3c36804dc1b9a722b83"
+  }
+}
