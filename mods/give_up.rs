@@ -22,10 +22,11 @@ pub fn f_00453900(cpu: &mut Cpu) {
     }
     let german = host::command(cpu).to_ascii_lowercase().contains("-german");
     let (title, text, yes, no) = if german {
-        ("Mission aufgeben?", "Willst du die Mission wirklich aufgeben? Alle deine Einheiten gehen verloren, und die Mission ist verloren.", "Aufgeben", "Weiterspielen")
+        ("Aufgeben?", "Willst du die Mission wirklich aufgeben? Alle deine Einheiten gehen verloren, und die Mission ist verloren.", "Aufgeben", "Weiterspielen")
     } else {
-        ("Give up the mission?", "Do you really want to give up? All your units will be lost, and so will the mission.", "Give up", "Keep playing")
+        ("Give up?", "Do you really want to give up? All your units will be lost, and so will the mission.", "Give up", "Keep playing")
     };
+    super::game_font::give_to_dialog(cpu);
     if host::ask(cpu, title, text, yes, no) {
         return o_00453900(cpu);
     }

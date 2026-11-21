@@ -57,9 +57,17 @@ const WM_LBUTTONDOWN: u32 = 0x201;
 const WM_LBUTTONUP: u32 = 0x202;
 const WM_RBUTTONDOWN: u32 = 0x204;
 const WM_RBUTTONUP: u32 = 0x205;
+const KEY_F9: u32 = 0x4000_0042;
 const KEY_F10: u32 = 0x4000_0043;
 const KEY_F11: u32 = 0x4000_0044;
 const STATS_FRAMES: usize = 120;
+/// The frame counter's panel: its top, where its graph starts below that
+/// (after two lines of text), and the graph's height, a pixel a millisecond.
+const STATS_TOP: f32 = 4.0;
+const STATS_GRAPH_TOP: f32 = 24.0;
+const STATS_GRAPH_HEIGHT: f32 = 50.0;
+/// How long a note from `host::show_note` stays on screen.
+const NOTE_TIME: std::time::Duration = std::time::Duration::from_secs(3);
 const BLEND_NONE: u32 = 0;
 const BLEND_ALPHA: u32 = 1;
 const MESSAGEBOX_ERROR: u32 = 0x10;
@@ -204,6 +212,8 @@ pub struct Video {
     /// The last frame shown: whether it was Glide's, and its swap or flip count.
     shown_frame: Option<(bool, u64)>,
     stats: bool,
+    /// A short line over the game and when it began (`host::show_note`).
+    note: Option<(String, Instant)>,
     frame_times: VecDeque<f32>,
     present_time: f32,
     fullscreen: bool,
@@ -225,6 +235,8 @@ pub struct Video {
     update_texture: unsafe extern "C" fn(Pointer, *const c_void, *const c_void, c_int) -> bool,
     render_clear: unsafe extern "C" fn(Pointer) -> bool,
     render_texture: unsafe extern "C" fn(Pointer, Pointer, *const c_void, *const c_void) -> bool,
+    set_texture_blend: unsafe extern "C" fn(Pointer, u32) -> bool,
+    destroy_texture: unsafe extern "C" fn(Pointer),
     render_present: unsafe extern "C" fn(Pointer) -> bool,
     poll_event: unsafe extern "C" fn(*mut Event) -> bool,
     convert_coordinates: unsafe extern "C" fn(Pointer, *mut Event) -> bool,
@@ -257,6 +269,10 @@ impl Video {
             let set_logical: unsafe extern "C" fn(Pointer, c_int, c_int, c_int) -> bool = symbol(library, "SDL_SetRenderLogicalPresentation");
             let create_texture: unsafe extern "C" fn(Pointer, u32, c_int, c_int, c_int) -> Pointer = symbol(library, "SDL_CreateTexture");
             let hide_cursor: unsafe extern "C" fn() -> bool = symbol(library, "SDL_HideCursor");
+            // Relative mode (the window holds the mouse) moves by the system's
+            // pointer speed and acceleration, not raw counts, which feel slow.
+            let set_hint: unsafe extern "C" fn(*const c_char, *const c_char) -> bool = symbol(library, "SDL_SetHint");
+            set_hint(c"SDL_MOUSE_RELATIVE_SYSTEM_SCALE".as_ptr(), c"1".as_ptr());
             if !init(INIT_VIDEO) {
                 return None;
             }
@@ -329,6 +345,7 @@ impl Video {
                 last_present: Instant::now(),
                 shown_frame: None,
                 stats: false,
+                note: None,
                 frame_times: VecDeque::with_capacity(STATS_FRAMES),
                 present_time: 0.0,
                 fullscreen,
@@ -345,6 +362,8 @@ impl Video {
                 update_texture: symbol(library, "SDL_UpdateTexture"),
                 render_clear: symbol(library, "SDL_RenderClear"),
                 render_texture: symbol(library, "SDL_RenderTexture"),
+                set_texture_blend: symbol(library, "SDL_SetTextureBlendMode"),
+                destroy_texture: symbol(library, "SDL_DestroyTexture"),
                 render_present: symbol(library, "SDL_RenderPresent"),
                 poll_event: symbol(library, "SDL_PollEvent"),
                 convert_coordinates: symbol(library, "SDL_ConvertEventToRenderCoordinates"),
@@ -518,17 +537,50 @@ impl Video {
         self.frame_times.push_back(milliseconds);
     }
 
+    /// Shows a line for `NOTE_TIME`, as `host::show_note` asks.
+    pub fn show_note(&mut self, text: &str) {
+        self.note = Some((text.to_string(), Instant::now()));
+    }
+
+    /// Whether a note is still to be shown.
+    fn note_showing(&self) -> bool {
+        self.note.as_ref().is_some_and(|(_, since)| since.elapsed() < NOTE_TIME)
+    }
+
+    /// Draws the note in the frame counter's style, below it when it shows.
+    fn draw_note(&self) {
+        const LEFT: f32 = 4.0;
+        const GLYPH: f32 = 8.0;
+        let Some((text, _)) = self.note.as_ref().filter(|_| self.note_showing()) else { return };
+        let top = if self.stats { self.stats_bottom() + 6.0 } else { 4.0 };
+        let line = CString::new(text.as_str()).unwrap_or_default();
+        unsafe {
+            (self.set_blend)(self.renderer, BLEND_ALPHA);
+            (self.set_color)(self.renderer, 0, 0, 0, 225);
+            let panel = [LEFT - 2.0, top - 2.0, text.len() as f32 * GLYPH + 4.0, GLYPH + 4.0];
+            (self.fill_rect)(self.renderer, panel.as_ptr());
+            (self.set_color)(self.renderer, 255, 255, 255, 255);
+            (self.debug_text)(self.renderer, LEFT, top, line.as_ptr());
+            (self.set_blend)(self.renderer, BLEND_NONE);
+        }
+    }
+
+    /// Where the frame counter's panel ends, from the top.
+    fn stats_bottom(&self) -> f32 {
+        STATS_TOP + STATS_GRAPH_TOP + STATS_GRAPH_HEIGHT + 2.0
+    }
+
     fn draw_stats(&self) {
         const LEFT: f32 = 4.0;
-        const TOP: f32 = 4.0;
-        const GRAPH_TOP: f32 = 24.0;
+        const TOP: f32 = STATS_TOP;
         const SECOND_LINE: f32 = 11.0;
-        const GRAPH_HEIGHT: f32 = 50.0; // A pixel is a millisecond.
+        let graph_top = STATS_GRAPH_TOP;
+        const GRAPH_HEIGHT: f32 = STATS_GRAPH_HEIGHT;
         const THIRTY_FPS: f32 = 1000.0 / 30.0;
         const GOOD: f32 = THIRTY_FPS + 3.0; // Room for the timer's jitter.
         const SLOW: f32 = 50.0;
         let width = STATS_FRAMES as f32;
-        let bottom = TOP + GRAPH_TOP + GRAPH_HEIGHT;
+        let bottom = TOP + graph_top + GRAPH_HEIGHT;
         let count = self.frame_times.len().max(1) as f32;
         let average = self.frame_times.iter().sum::<f32>() / count;
         let longest = self.frame_times.iter().fold(0.0f32, |a, b| a.max(*b));
@@ -538,7 +590,7 @@ impl Video {
         unsafe {
             (self.set_blend)(self.renderer, BLEND_ALPHA);
             (self.set_color)(self.renderer, 0, 0, 0, 225);
-            let panel = [LEFT - 2.0, TOP - 2.0, width + 56.0, GRAPH_TOP + GRAPH_HEIGHT + 4.0];
+            let panel = [LEFT - 2.0, TOP - 2.0, width + 56.0, graph_top + GRAPH_HEIGHT + 4.0];
             (self.fill_rect)(self.renderer, panel.as_ptr());
             for (column, milliseconds) in self.frame_times.iter().enumerate() {
                 let (red, green) = if *milliseconds <= GOOD { (60, 220) } else if *milliseconds <= SLOW { (240, 200) } else { (240, 50) };
@@ -653,6 +705,16 @@ pub(crate) fn handle_event(cpu: &mut Cpu, event: &Event) {
         EVENT_QUIT => std::process::exit(0),
         EVENT_MOUSE_MOTION => {
             let video = cpu.host.video.as_mut().unwrap();
+            if !video.relative {
+                // The game has the mouse to itself, as the fullscreen original
+                // did: the window holds on to it, so the pointer can't leave
+                // the picture into the letterbox bars, where the game's pointer
+                // would stay at the edge until the cursor came back. Dialogs
+                // drawn by the runtime release it while they are open.
+                video.relative = true;
+                video.remainder = (0.0, 0.0);
+                unsafe { (video.set_relative)(video.window, true) };
+            }
             let (x, y) = if video.relative {
                 // The game put the cursor back where the drag began: add the
                 // travel to that, in game pixels.
@@ -664,7 +726,7 @@ pub(crate) fn handle_event(cpu: &mut Cpu, event: &Event) {
                 (event.f32_at(28).clamp(0.0, 639.0) as u32, event.f32_at(32).clamp(0.0, 479.0) as u32)
             };
             cpu.host.pointer = (x, y);
-            cpu.host.messages.push_back((WM_MOUSEMOVE, 0, x | (y << 16)));
+            cpu.host.post((WM_MOUSEMOVE, 0, x | (y << 16)));
         }
         kind @ (EVENT_MOUSE_BUTTON_DOWN | EVENT_MOUSE_BUTTON_UP) => {
             let down = kind == EVENT_MOUSE_BUTTON_DOWN;
@@ -672,17 +734,10 @@ pub(crate) fn handle_event(cpu: &mut Cpu, event: &Event) {
             let video = cpu.host.video.as_mut().unwrap();
             let bit = 1u32 << (event.0[24] & 31);
             video.buttons = if down { video.buttons | bit } else { video.buttons & !bit };
-            if video.buttons == 0 && video.relative {
-                // Hand the cursor back where the game's pointer is.
-                video.relative = false;
-                unsafe { (video.set_relative)(video.window, false) };
-                let (window_x, window_y) = video.game_to_window(x as f32 + 0.5, y as f32 + 0.5);
-                unsafe { (video.warp_mouse)(video.window, window_x, window_y) };
-            }
             let position = x | (y << 16);
             match event.0[24] {
-                1 => cpu.host.messages.push_back((if down { WM_LBUTTONDOWN } else { WM_LBUTTONUP }, if down { MK_LBUTTON } else { 0 }, position)),
-                3 => cpu.host.messages.push_back((if down { WM_RBUTTONDOWN } else { WM_RBUTTONUP }, if down { MK_RBUTTON } else { 0 }, position)),
+                1 => cpu.host.post((if down { WM_LBUTTONDOWN } else { WM_LBUTTONUP }, if down { MK_LBUTTON } else { 0 }, position)),
+                3 => cpu.host.post((if down { WM_RBUTTONDOWN } else { WM_RBUTTONUP }, if down { MK_RBUTTON } else { 0 }, position)),
                 _ => {}
             }
         }
@@ -708,6 +763,12 @@ pub(crate) fn handle_event(cpu: &mut Cpu, event: &Event) {
                 }
                 return;
             }
+            if key == KEY_F9 {
+                if down {
+                    cpu.host.f9_presses += 1;
+                }
+                return;
+            }
             if key == KEY_F11 {
                 if down {
                     if let Some(video) = cpu.host.video.as_mut() {
@@ -717,12 +778,13 @@ pub(crate) fn handle_event(cpu: &mut Cpu, event: &Event) {
                 }
                 return;
             }
+            cpu.host.input.key(event.u32_at(24), down);
             if let Some(code) = virtual_key(key) {
-                cpu.host.messages.push_back((if down { WM_KEYDOWN } else { WM_KEYUP }, code, 0));
+                cpu.host.post((if down { WM_KEYDOWN } else { WM_KEYUP }, code, 0));
                 // Windows sends a character for Enter, Backspace, Tab and Escape
                 // too, and text fields such as a save's name wait for it.
                 if down && ((32..127).contains(&key) || matches!(key, 8 | 9 | 13 | 27)) {
-                    cpu.host.messages.push_back((WM_CHAR, key, 0));
+                    cpu.host.post((WM_CHAR, key, 0));
                 }
             }
         }
@@ -770,11 +832,15 @@ pub fn pump(cpu: &mut Cpu) {
             });
             if let Some(picture) = picture {
                 let started = Instant::now();
-                if video.stats {
+                let overlay = video.stats || video.note_showing();
+                if overlay {
                     video.clear_overlay();
+                }
+                if video.stats {
                     video.draw_stats();
                 }
-                video.present_gl(picture, video.stats);
+                video.draw_note();
+                video.present_gl(picture, overlay);
                 video.present_time += (started.elapsed().as_secs_f32() * 1000.0 - video.present_time) * 0.05;
                 cpu.host.presented += started.elapsed().as_secs_f64();
                 video.last_present = Instant::now();
@@ -798,6 +864,7 @@ pub fn pump(cpu: &mut Cpu) {
                 if video.stats {
                     video.draw_stats();
                 }
+                video.draw_note();
                 (video.render_present)(video.renderer);
             }
             // Smoothed, so the number can be read.

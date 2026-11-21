@@ -10,7 +10,7 @@
 //! rules for the frame buffer. `glide_gl` draws on the card and `glide_raster`
 //! on the processor.
 
-use super::glide_gl::Gpu;
+use super::glide_gl::{Counts, Gpu};
 use super::glide_raster::{self as raster, Batch, Combine, Managed, Screen, State, Vertex};
 use crate::cpu::{Cpu, GuestFn};
 use std::sync::Mutex;
@@ -26,7 +26,7 @@ pub struct Glide {
     pub width: usize,
     pub height: usize,
     /// The graphics card's renderer. With it, the buffers below stay empty.
-    gpu: Option<Gpu>,
+    pub gpu: Option<Gpu>,
     pub buffers: [Vec<u32>; 2],
     pub back: usize,
     pub depth: Vec<f32>,
@@ -59,6 +59,8 @@ pub struct Glide {
     last_swap: std::time::Instant,
     /// The longest frame since the `fps` step last read it, in seconds.
     pub longest_frame: f64,
+    /// The card's work since the `fps` step last read it.
+    pub counts: Counts,
 }
 
 impl Glide {
@@ -107,6 +109,7 @@ impl Glide {
             spent: [0.0; 3],
             last_swap: std::time::Instant::now(),
             longest_frame: 0.0,
+            counts: Counts::default(),
         }
     }
 
@@ -529,9 +532,11 @@ fn buffer_swap(cpu: &mut Cpu) -> u32 {
             glide.scene = None;
             glide.scene_on_card = false;
         }
-        if let Some(gpu) = glide.gpu.as_mut() {
+        let counts = glide.gpu.as_mut().map_or(Counts::default(), |gpu| {
             gpu.collect();
-        }
+            std::mem::take(&mut gpu.counts)
+        });
+        glide.counts.add(&counts);
         glide.drew_3d = false;
         glide.restored = false;
         glide.frames += 1;

@@ -13798,7 +13798,7 @@ pub fn f_16010f7b(cpu: &mut Cpu) {
   { let v: u16 = cpu.add16((cpu.eax as u16), (cpu.ecx as u16)); cpu.eax = (cpu.eax & 0xffff0000) | v as u32; }
   { let v: u32 = cpu.adc32(cpu.edx, cpu.ebx); cpu.edx = v; }
   { let v: u32 = cpu.esi.wrapping_add(0x2u32); cpu.esi = v; }
-  cpu.unimplemented(0x16010fd8, "Shrd");
+  { let a = (cpu.eax as u16) as u32; let b = (cpu.edx as u16) as u32; let n = 14u32; if n != 0 && n <= 16 { let wide: u32 = ((b << 16) | a) >> n; let r = wide as u16; cpu.cf = (a >> (n - 1)) & 1 != 0; cpu.zf = r == 0; cpu.sf = r & 0x8000 != 0; cpu.parity = r as u8; let v: u16 = r; cpu.eax = (cpu.eax & 0xffff0000) | v as u32; } }
   { cpu.and16((cpu.eax as u16), (cpu.eax as u16)); }
   if (cpu.sf == cpu.of) { pc = 0x16010fe4; continue; }
   pc = 0x16010fe2; continue;
@@ -14361,7 +14361,7 @@ pub fn f_160115db(cpu: &mut Cpu) {
   { let v = cpu.r16(0x18u32.wrapping_add(cpu.ebx)); cpu.imul16(v); }
   { let v: u16 = cpu.add16((cpu.eax as u16), (cpu.ecx as u16)); cpu.eax = (cpu.eax & 0xffff0000) | v as u32; }
   { let v: u32 = cpu.adc32(cpu.edx, cpu.ebp); cpu.edx = v; }
-  cpu.unimplemented(0x16011609, "Shrd");
+  { let a = (cpu.eax as u16) as u32; let b = (cpu.edx as u16) as u32; let n = 14u32; if n != 0 && n <= 16 { let wide: u32 = ((b << 16) | a) >> n; let r = wide as u16; cpu.cf = (a >> (n - 1)) & 1 != 0; cpu.zf = r == 0; cpu.sf = r & 0x8000 != 0; cpu.parity = r as u8; let v: u16 = r; cpu.eax = (cpu.eax & 0xffff0000) | v as u32; } }
   { let v: u32 = (cpu.eax as u16) as i16 as i32 as u32; cpu.eax = v; }
   { cpu.stos(4, false); }
   { let v: u16 = cpu.r16(0x0u32.wrapping_add(cpu.esi)); cpu.eax = (cpu.eax & 0xffff0000) | v as u32; }
@@ -14376,7 +14376,7 @@ pub fn f_160115db(cpu: &mut Cpu) {
   { let v = cpu.r16(0x1cu32.wrapping_add(cpu.ebx)); cpu.imul16(v); }
   { let v: u16 = cpu.add16((cpu.eax as u16), (cpu.ecx as u16)); cpu.eax = (cpu.eax & 0xffff0000) | v as u32; }
   { let v: u32 = cpu.adc32(cpu.edx, cpu.ebp); cpu.edx = v; }
-  cpu.unimplemented(0x16011637, "Shrd");
+  { let a = (cpu.eax as u16) as u32; let b = (cpu.edx as u16) as u32; let n = 14u32; if n != 0 && n <= 16 { let wide: u32 = ((b << 16) | a) >> n; let r = wide as u16; cpu.cf = (a >> (n - 1)) & 1 != 0; cpu.zf = r == 0; cpu.sf = r & 0x8000 != 0; cpu.parity = r as u8; let v: u16 = r; cpu.eax = (cpu.eax & 0xffff0000) | v as u32; } }
   { let v: u32 = (cpu.eax as u16) as i16 as i32 as u32; cpu.eax = v; }
   { cpu.stos(4, false); }
   { let v: u16 = cpu.r16(0x0u32.wrapping_add(cpu.esi)); cpu.eax = (cpu.eax & 0xffff0000) | v as u32; }
@@ -14391,7 +14391,7 @@ pub fn f_160115db(cpu: &mut Cpu) {
   { let v = cpu.r16(0x20u32.wrapping_add(cpu.ebx)); cpu.imul16(v); }
   { let v: u16 = cpu.add16((cpu.eax as u16), (cpu.ecx as u16)); cpu.eax = (cpu.eax & 0xffff0000) | v as u32; }
   { let v: u32 = cpu.adc32(cpu.edx, cpu.ebp); cpu.edx = v; }
-  cpu.unimplemented(0x16011665, "Shrd");
+  { let a = (cpu.eax as u16) as u32; let b = (cpu.edx as u16) as u32; let n = 14u32; if n != 0 && n <= 16 { let wide: u32 = ((b << 16) | a) >> n; let r = wide as u16; cpu.cf = (a >> (n - 1)) & 1 != 0; cpu.zf = r == 0; cpu.sf = r & 0x8000 != 0; cpu.parity = r as u8; let v: u16 = r; cpu.eax = (cpu.eax & 0xffff0000) | v as u32; } }
   { let v: u32 = (cpu.eax as u16) as i16 as i32 as u32; cpu.eax = v; }
   { cpu.stos(4, false); }
   { let v: u32 = cpu.edi.wrapping_add(0x4u32); cpu.edi = v; }

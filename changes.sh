@@ -7,7 +7,7 @@
 # Usage: ./changes.sh FROM [TO] [--code]
 #   FROM, TO: versions such as 0.5-beta (the tag v0.5-beta), or any git
 #   revision. TO defaults to the working tree's commit, HEAD.
-# Example: ./changes.sh 0.4-beta 0.5-beta > changes.diff
+# Example: ./changes.sh 0.5-beta 0.6-beta > changes.diff
 set -euo pipefail
 cd "$(dirname "$0")"
 

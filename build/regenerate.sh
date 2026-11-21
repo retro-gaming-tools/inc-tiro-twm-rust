@@ -19,9 +19,13 @@ cargo fetch --quiet --locked --manifest-path /recomp/Cargo.toml
 cargo build --quiet --release --offline --locked --manifest-path /recomp/Cargo.toml --target-dir /out/target
 
 mapfile -t files < <(setting '.recompFiles // {} | to_entries[] | "/game/\(.key)=\(.value)"')
-export RECOMP_VERSION RECOMP_REPO RECOMP_PATCHES RECOMP_SWITCHES RECOMP_RENDERERS RECOMP_LANGUAGES RECOMP_MUSIC RECOMP_REGISTRY RECOMP_CD
+export RECOMP_VERSION RECOMP_REPO RECOMP_PATCHES RECOMP_SWITCHES RECOMP_RENDERERS RECOMP_LANGUAGES RECOMP_MUSIC RECOMP_REGISTRY RECOMP_CD RECOMP_INSTALL RECOMP_CD_TRACKS RECOMP_VERSION_NAMES RECOMP_THEME
+RECOMP_THEME=$(setting '.launcherTheme // {} | to_entries | map("\(.key)=\(.value)") | join(";")')
+RECOMP_VERSION_NAMES=$(setting '.recompVersionNames // {} | to_entries | map("\(.key)=\(.value)") | join(";")')
 RECOMP_REGISTRY=$(setting '.recompRegistry // [] | join(";")')
 RECOMP_CD=$(setting '.recompCd // ""')
+RECOMP_INSTALL=$(setting '.recompInstall // [] | join(";")')
+RECOMP_CD_TRACKS=$(setting '.recompCdTracks // [] | join(" ")')
 RECOMP_VERSION=$(setting '.recompVersion // ""')
 RECOMP_REPO=$(setting '.recompRepo // ""')
 RECOMP_PATCHES=$(setting '.recompPatches // [] | join(";")')

@@ -22,6 +22,77 @@ pub struct Module {
     pub file: &'static str,
     pub base: u32,
     pub sha256: &'static str,
+    /// The version players know the game by, from `recompVersionNames`, such
+    /// as `GOG release 1.52e`, on the program's module. The launcher shows it.
+    pub name: &'static str,
+}
+
+/// The name of the version in a folder or disc image that passed `check_files` or
+/// `check_image`: its files match the hashes, so it's the version the program's module names.
+pub(crate) fn version_in(game: &Game) -> Option<&'static str> {
+    Some(game.modules.first()?.name).filter(|name| !name.is_empty())
+}
+
+/// Where the game's files sit on a disc: the folder holding the program, with
+/// the program's own folders in its name taken off, such as `GAME/` for a disc
+/// with `GAME/PROGRAM.EXE`, or "" for the disc's top.
+fn image_root(game: &Game, files: &[host::disc::Entry]) -> Option<String> {
+    let program = game.modules.first()?.file.to_lowercase();
+    let suffix = format!("/{program}");
+    let mut roots: Vec<String> = files
+        .iter()
+        .map(|entry| entry.path.to_lowercase())
+        .filter_map(|path| if path == program { Some(String::new()) } else { path.strip_suffix(&suffix).map(|root| format!("{root}/")) })
+        .collect();
+    // The shallowest copy, since a disc can carry a second one deeper down.
+    roots.sort_by_key(|root| root.matches('/').count());
+    let root = roots.into_iter().next()?;
+    // Back to the disc's spelling, for the unpacked folder's name.
+    let spelled = files.iter().find(|entry| entry.path.to_lowercase().starts_with(&root)).map(|entry| entry.path[..root.len()].to_string());
+    Some(spelled.unwrap_or(root))
+}
+
+/// Checks a disc image as `check_files` checks a folder, with a reason short
+/// enough for the launcher. Gives where on the disc the game is.
+pub(crate) fn check_image(game: &Game, image: &std::path::Path) -> Result<String, String> {
+    let mut disc = host::disc::Disc::open(image).map_err(|_| "Not a disc image this can read".to_string())?;
+    let files = disc.files();
+    // The count tells a disc of something else from an image that couldn't be
+    // read: that one has no files at all.
+    let root = image_root(game, &files).ok_or_else(|| format!("Not this game's disc ({} files)", files.len()))?;
+    for module in game.modules {
+        let place = format!("{root}{}", module.file);
+        let entry = files.iter().find(|entry| entry.path.eq_ignore_ascii_case(&place)).ok_or_else(|| format!("Not on the disc: {}", module.file))?;
+        let data = disc.read(entry).map_err(|_| "The disc image is damaged".to_string())?;
+        let found: String = Sha256::digest(&data).iter().map(|byte| format!("{byte:02x}")).collect();
+        if found != module.sha256 {
+            return Err("This disc is a different version".to_string());
+        }
+    }
+    Ok(root)
+}
+
+/// Where a disc image is unpacked: a folder named `game` beside the program,
+/// which is also where a start without any path looks first.
+pub(crate) fn unpack_target() -> std::path::PathBuf {
+    host::launcher::program_folder().unwrap_or_default().join("game")
+}
+
+/// Unpacks a disc image that `check_image` passed into `game` beside the program,
+/// unless that already holds the right files, and gives the game's folder in it.
+/// `progress` gets the bytes written so far and the total.
+pub(crate) fn unpack_image(game: &Game, image: &std::path::Path, progress: &mut dyn FnMut(u64, u64)) -> Result<String, String> {
+    let root = check_image(game, image)?;
+    let target = unpack_target();
+    let folder = target.join(root.trim_end_matches('/')).display().to_string();
+    if check_files(game, &folder).is_ok() {
+        return Ok(folder);
+    }
+    if target.exists() {
+        return Err(format!("{} is in the way: it holds other files. Move or delete it.", target.display()));
+    }
+    host::disc::unpack(image, &target, progress)?;
+    Ok(folder)
 }
 
 pub struct Game {
@@ -37,10 +108,11 @@ pub struct Game {
     pub renderers: &'static [(&'static str, &'static str)],
     /// The languages the launcher offers, from `recompLanguages`, the same way.
     pub languages: &'static [(&'static str, &'static str)],
-    /// Mods the player can turn off in the launcher: the file in `mods/`, its
-    /// label, whether it starts on, and whether its row is on the launcher's
-    /// advanced page. Mods not listed are always on.
-    pub mods: &'static [(&'static str, &'static str, bool, bool)],
+    /// Mods with a row in the launcher. Mods not listed are always on.
+    pub mods: &'static [ModRow],
+    /// Mods' checks of the chosen folder and settings (`//! launcher-check:`),
+    /// whose warnings the launcher shows.
+    pub checks: &'static [LauncherCheck],
     pub modules: &'static [Module],
     pub table: &'static [(u32, GuestFn)],
     pub icon: &'static [u8],
@@ -52,6 +124,10 @@ pub struct Game {
     /// The volume label of the game's CD, from `recompCd`. With one, the game
     /// finds a CD drive D: with that label, which is the game folder.
     pub cd: &'static str,
+    /// The launcher's look, from `launcherTheme` in port.json, as
+    /// `name=value` pairs split by `;`: see `host::launcher::Theme`. Empty is
+    /// the plain look.
+    pub theme: &'static str,
 }
 
 /// A program with no console would otherwise end without a word, so a crash
@@ -112,7 +188,13 @@ pub(crate) fn check_files(game: &Game, folder: &str) -> Result<(), String> {
 }
 
 fn find_file(folder: &str, name: &str) -> Option<std::path::PathBuf> {
-    std::fs::read_dir(folder).ok()?.flatten().find(|entry| entry.file_name().to_string_lossy().eq_ignore_ascii_case(name)).map(|entry| entry.path())
+    // A name may hold folders, such as `Z/WINZ.EXE` on a copy of a disc. Each
+    // part is matched without regard to case.
+    let mut path = std::path::PathBuf::from(folder);
+    for part in name.split('/') {
+        path = std::fs::read_dir(&path).ok()?.flatten().find(|entry| entry.file_name().to_string_lossy().eq_ignore_ascii_case(part)).map(|entry| entry.path())?;
+    }
+    Some(path)
 }
 
 fn load_images(modules: &[Module], folder: &str) -> Vec<(String, pe::Image)> {
@@ -123,7 +205,8 @@ fn load_images(modules: &[Module], folder: &str) -> Vec<(String, pe::Image)> {
             let file = std::fs::read(path).expect("a game file can't be read");
             let mut image = pe::Image::parse(&file).expect("a game file isn't a 32-bit Windows program");
             image.rebase(module.base);
-            (module.file.to_lowercase(), image)
+            // Other modules import it by its name alone, whatever folder it's in.
+            (module.file.rsplit('/').next().unwrap_or(module.file).to_lowercase(), image)
         })
         .collect()
 }
@@ -153,7 +236,7 @@ fn resolve(image: &pe::Image, others: &[(String, pe::Image)], cpu: &mut Cpu, kno
     }
 }
 
-fn start(game: &'static Game, folder: String, switches: Vec<bool>, mods: Vec<bool>, command: &'static str) {
+fn start(game: &'static Game, folder: String, switches: Vec<bool>, mods: Vec<usize>, command: &'static str) {
     let table = game.table;
     let images = load_images(game.modules, &folder);
     let mut cpu = Cpu {
@@ -219,7 +302,7 @@ fn start(game: &'static Game, folder: String, switches: Vec<bool>, mods: Vec<boo
     cpu.host.music = game.music;
     cpu.host.cd = game.cd;
     cpu.host.registry = host::registry::Registry::load(&cpu.host.folder, game.registry);
-    cpu.host.mods_off = game.mods.iter().zip(mods).filter(|(_, on)| !on).map(|((file, ..), _)| *file).collect();
+    cpu.host.mod_choices = game.mods.iter().zip(mods).map(|(row, chosen)| (row.file, chosen)).collect();
     let entry = images[0].1.entry;
     for (name, image) in images {
         cpu.host.modules.push(host::LoadedModule {
@@ -254,8 +337,46 @@ pub struct Settings {
     pub renderer: usize,
     /// An index into the game's languages.
     pub language: usize,
-    /// One for each of the game's optional mods: whether it's on.
-    pub mods: Vec<bool>,
+    /// One for each of the game's mod rows: the chosen value's index (0 is Off).
+    pub mods: Vec<usize>,
+}
+
+/// What a mod's launcher check is told: the chosen game folder, and the
+/// chosen text language's label, such as `English` (empty for a game with
+/// no language list).
+pub struct Choices<'a> {
+    pub folder: &'a std::path::Path,
+    pub language: &'a str,
+}
+
+/// A mod's check of the launcher's choices: two short lines of warning, or
+/// `None` when all is well.
+pub type LauncherCheck = fn(&Choices) -> Option<[String; 2]>;
+
+/// The first warning any of the game's checks gives for these settings.
+pub fn check_choices(game: &Game, settings: &Settings) -> Option<[String; 2]> {
+    let language = game.languages.get(settings.language).map_or("", |(_, label)| *label);
+    let choices = Choices { folder: std::path::Path::new(&settings.folder), language };
+    game.checks.iter().find_map(|check| check(&choices))
+}
+
+/// A mod's row in the launcher: the file in `mods/`, its label, the values it
+/// steps through (`Off`, `On` for an On/Off row), the index it starts with,
+/// and whether it's on the launcher's advanced page.
+pub struct ModRow {
+    pub file: &'static str,
+    pub label: &'static str,
+    pub values: &'static [&'static str],
+    pub default: usize,
+    pub advanced: bool,
+}
+
+impl ModRow {
+    /// A value's index, from its name (ignoring case) or its number.
+    pub fn find(&self, value: &str) -> Option<usize> {
+        let value = value.trim();
+        self.values.iter().position(|name| name.eq_ignore_ascii_case(value)).or_else(|| value.parse().ok().filter(|&at| at < self.values.len()))
+    }
 }
 
 /// The renderer or language named by a label or a switch, ignoring case.
@@ -280,7 +401,8 @@ fn command_with_choices(game: &Game, settings: &Settings) -> String {
 pub const DEFAULT_SCALE: u32 = 3;
 
 /// Reads `[folder] [--scale=N] [--fullscreen] [--drawing=processor|card] [--renderer=NAME] [--language=NAME] [--mod-off=NAME]
-/// [--mod-on=NAME] [--play] [game switches]`.
+/// [--mod-on=NAME] [--mod=NAME:VALUE] [--play] [game switches]`. `--mod-off` picks a row's
+/// first value and `--mod-on` its second; `--mod=` takes a value's name or number.
 fn settings_from_arguments(game: &Game, arguments: &[String]) -> Settings {
     let has = |wanted: &str| arguments.iter().any(|argument| argument.eq_ignore_ascii_case(wanted));
     let scale = arguments.iter().find_map(|argument| argument.strip_prefix("--scale=")?.parse().ok());
@@ -293,11 +415,18 @@ fn settings_from_arguments(game: &Game, arguments: &[String]) -> Settings {
         switches: game.switches.iter().map(|(name, _, _)| has(name)).collect(),
         renderer: arguments.iter().find_map(|argument| find_choice(game.renderers, argument.strip_prefix("--renderer=")?)).unwrap_or(0),
         language: arguments.iter().find_map(|argument| find_choice(game.languages, argument.strip_prefix("--language=")?)).unwrap_or(0),
-        mods: game.mods.iter().map(|(file, _, on, _)| {
-            let named = |prefix: &str| arguments.iter().any(|argument| argument.strip_prefix(prefix).is_some_and(|name| name.eq_ignore_ascii_case(file)));
-            if named("--mod-off=") { false } else if named("--mod-on=") { true } else { *on }
-        }).collect(),
+        mods: game.mods.iter().map(|row| mod_from_arguments(row, arguments).unwrap_or(row.default)).collect(),
     }
+}
+
+/// The value a command line chose for a mod row, if it named the row.
+pub fn mod_from_arguments(row: &ModRow, arguments: &[String]) -> Option<usize> {
+    let named = |prefix: &str| arguments.iter().any(|argument| argument.strip_prefix(prefix).is_some_and(|name| name.eq_ignore_ascii_case(row.file)));
+    let chosen = arguments.iter().find_map(|argument| {
+        let (file, value) = argument.strip_prefix("--mod=")?.split_once(':')?;
+        file.eq_ignore_ascii_case(row.file).then(|| row.find(value)).flatten()
+    });
+    chosen.or(if named("--mod-off=") { Some(0) } else if named("--mod-on=") { Some(1) } else { None })
 }
 
 /// Runs the game on a thread with a host stack deep enough for its calls.
@@ -305,11 +434,15 @@ pub fn run(game: &'static Game) {
     report_crashes(game.title);
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let mut settings = settings_from_arguments(game, &arguments);
+    host::launcher::snapshot(game, &settings);
     if host::launcher::wanted(&arguments) {
         // The launcher guesses no folder: it shows the one saved last time, or none to choose.
         if !arguments.iter().any(|argument| !argument.starts_with("--")) {
             settings.folder = String::new();
         }
+        // A player starts in fullscreen unless they chose a window before
+        // (the saved setting wins) or asked for one with `--window`.
+        settings.fullscreen = !arguments.iter().any(|argument| argument == "--window");
         match host::launcher::show(game, settings) {
             host::launcher::Outcome::Start(chosen) => settings = chosen,
             host::launcher::Outcome::Quit => std::process::exit(0),
@@ -326,7 +459,17 @@ pub fn run(game: &'static Game) {
         std::env::set_var("RECOMP_GLIDE", "cpu");
     }
     let command: &'static str = Box::leak(command_with_choices(game, &settings).into_boxed_str());
-    let Settings { folder, switches, mods, .. } = settings;
+    let Settings { mut folder, switches, mods, .. } = settings;
+    // A disc image given on the command line, with no launcher to unpack it.
+    if host::disc::is_image(std::path::Path::new(&folder)) {
+        match unpack_image(game, std::path::Path::new(&folder), &mut |_, _| {}) {
+            Ok(unpacked) => folder = unpacked,
+            Err(problem) => {
+                host::video::show_error(game.title, &format!("{} can't use this disc image:\n{folder}\n\n{problem}.\n\n{} needs {}.", game.title, game.title, game.needs));
+                std::process::exit(1);
+            }
+        }
+    }
     if let Err(text) = check_files(game, &folder) {
         host::video::show_error(game.title, &text);
         std::process::exit(1);

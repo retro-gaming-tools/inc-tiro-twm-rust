@@ -230,6 +230,37 @@ pub struct Gpu {
     /// kept here so that the address stays its own.
     textures: HashMap<usize, (Arc<Texture>, u32)>,
     vertices: Vec<f32>,
+    /// What the card was asked to do since the last swap.
+    pub counts: Counts,
+    /// The settings and texture the last group of triangles was drawn with.
+    last_drawn: Option<(Pipeline, usize)>,
+}
+
+/// Work sent to the card in one frame, to see where its time goes.
+#[derive(Clone, Copy, Default)]
+pub struct Counts {
+    /// Calls that draw triangles.
+    pub draws: u32,
+    /// Of those, the ones whose settings and texture were the same as the
+    /// previous call's, so that setting them again was wasted.
+    pub same_state: u32,
+    pub triangles: u32,
+    /// Textures sent to the card, and bytes of textures, vertices and 2D.
+    pub texture_uploads: u32,
+    pub bytes: usize,
+    /// Frame buffer locks that read back from the card.
+    pub reads: u32,
+}
+
+impl Counts {
+    pub fn add(&mut self, other: &Counts) {
+        self.draws += other.draws;
+        self.same_state += other.same_state;
+        self.triangles += other.triangles;
+        self.texture_uploads += other.texture_uploads;
+        self.bytes += other.bytes;
+        self.reads += other.reads;
+    }
 }
 
 fn rgb(color: u32) -> [f32; 3] {
@@ -335,6 +366,8 @@ impl Gpu {
             buffer,
             textures: HashMap::new(),
             vertices: Vec::new(),
+            counts: Counts::default(),
+            last_drawn: None,
         };
         let error = unsafe { (gl.get_error)() };
         if error != 0 {
@@ -382,6 +415,8 @@ impl Gpu {
         }
         let gl = self.gl;
         let name = gl.texture(gl::LINEAR);
+        self.counts.texture_uploads += 1;
+        self.counts.bytes += texture.levels.iter().map(|data| data.width * data.height * 4).sum::<usize>();
         unsafe {
             for (level, data) in texture.levels.iter().enumerate() {
                 // 0xAARRGGBB in memory is blue first.
@@ -505,8 +540,16 @@ impl Gpu {
             (gl.buffer_data)(gl::ARRAY_BUFFER, (self.vertices.len() * 4) as isize, self.vertices.as_ptr() as *const c_void, gl::STREAM_DRAW);
             (gl.active_texture)(gl::TEXTURE0);
         }
+        self.counts.bytes += self.vertices.len() * 4;
         for (snapshot, first, count) in runs {
             let snapshot = &snapshots[snapshot as usize];
+            let drawn = (snapshot.pipeline.clone(), snapshot.texture.as_ref().map_or(0, |texture| Arc::as_ptr(texture) as usize));
+            self.counts.draws += 1;
+            self.counts.triangles += count as u32 / 3;
+            if self.last_drawn.as_ref() == Some(&drawn) {
+                self.counts.same_state += 1;
+            }
+            self.last_drawn = Some(drawn);
             self.apply(&snapshot.pipeline, snapshot.texture.as_ref());
             unsafe { (gl.draw_arrays)(gl::TRIANGLES, first, count) };
         }
@@ -517,6 +560,7 @@ impl Gpu {
         let gl = self.gl;
         self.aim(self.buffers[buffer].framebuffer, self.width, self.height);
         let mut what = 0;
+        self.last_drawn = None;
         unsafe {
             (gl.disable)(gl::SCISSOR_TEST);
             if let Some(color) = color {
@@ -545,12 +589,16 @@ impl Gpu {
             (gl.tex_sub_image)(gl::TEXTURE_2D, 0, 0, 0, GAME_WIDTH as i32, GAME_HEIGHT as i32, gl::RGB, gl::UNSIGNED_SHORT_5_6_5, pixels.as_ptr() as *const c_void);
             (gl.disable)(gl::BLEND);
         }
+        self.counts.bytes += pixels.len() * 2;
+        // The cover leaves other settings behind, so the next group sets all.
+        self.last_drawn = None;
         self.cover.draw(gl, self.flat, false, true);
     }
 
     /// Reads a buffer back at the game's size, for a frame buffer lock that reads.
     pub fn read_flat(&mut self, buffer: usize, pixels: &mut [u16]) {
         let small = [0, 0, GAME_WIDTH as i32, GAME_HEIGHT as i32];
+        self.counts.reads += 1;
         self.copy(self.buffers[buffer].framebuffer, self.whole(), self.small.framebuffer, small);
         unsafe {
             (self.gl.bind_framebuffer)(gl::READ_FRAMEBUFFER, self.small.framebuffer);

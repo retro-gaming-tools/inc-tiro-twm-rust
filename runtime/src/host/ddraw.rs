@@ -57,6 +57,9 @@ pub struct Draw {
     pub shown_palette: u32,
     /// An 8-bit frame turned into 16-bit pixels for the window.
     pub converted: Vec<u16>,
+    /// A picture the game drew on its window with GDI, as 16-bit pixels of the
+    /// game's screen size. It is what the window shows until the next Flip.
+    pub window_picture: Option<Vec<u16>>,
 }
 
 impl Default for Draw {
@@ -76,6 +79,7 @@ impl Default for Draw {
             palettes: HashMap::new(),
             shown_palette: 0,
             converted: Vec::new(),
+            window_picture: None,
         }
     }
 }
@@ -203,6 +207,7 @@ fn flip(cpu: &mut Cpu) -> u32 {
         cpu.host.draw.surfaces.get_mut(&front.back).unwrap().pixels = front.pixels;
     }
     cpu.host.draw.frames += 1;
+    cpu.host.draw.window_picture = None;
     wait_for_refresh(cpu);
     super::video::pump(cpu);
     DD_OK
@@ -336,11 +341,8 @@ fn query_display(cpu: &mut Cpu) -> u32 {
 
 fn set_display_mode(cpu: &mut Cpu) -> u32 {
     let (width, height, depth) = (cpu.arg(1), cpu.arg(2), cpu.arg(3));
-    if depth != 8 && depth != 16 {
-        return DDERR_GENERIC;
-    }
     cpu.host.display = (width, height);
-    cpu.host.draw.depth = depth;
+    cpu.host.draw.depth = if depth == 8 { 8 } else { 16 };
     DD_OK
 }
 
@@ -363,6 +365,9 @@ fn enumerate_modes(cpu: &mut Cpu) -> u32 {
 
 /// The frame for the window, as 16-bit pixels: where they are, and the bytes a row.
 pub fn frame_for_window(cpu: &mut Cpu) -> Option<(*const u8, u32)> {
+    if let Some(picture) = &cpu.host.draw.window_picture {
+        return Some((picture.as_ptr() as *const u8, super::GAME_WIDTH as u32 * 2));
+    }
     let surface = *cpu.host.draw.surfaces.get(&cpu.host.draw.primary)?;
     if surface.bytes == 2 {
         return Some((unsafe { cpu.memory.add(surface.pixels as usize) } as *const u8, surface.width * 2));
@@ -425,10 +430,13 @@ fn build_tables(cpu: &mut Cpu) {
         }),
         method!(0x4c, 1, |_cpu| { DD_OK }),
         method!(0x50, 3, |_cpu| { DD_OK }),
-        method!(0x54, 4, |cpu| { set_display_mode(cpu) }),
+        // Six arguments, as the later interfaces take, and QueryInterface hands
+        // back the same object: what Incubation needs. A game that sets the mode
+        // through the first interface, with four, needs the split that Z's own
+        // runtime has (`query_display`).
+        method!(0x54, 6, |cpu| { set_display_mode(cpu) }),
         method!(0x58, 3, |_cpu| { DD_OK }),
     ]);
-    display[0] = method!(0x00, 3, |cpu| { query_display(cpu) });
     let mut display2 = display.clone();
     let mode = display2.iter().position(|(offset, _, _)| *offset == 0x54).unwrap();
     display2[mode] = method!(0x54, 6, |cpu| { set_display_mode(cpu) });
@@ -511,7 +519,40 @@ fn build_tables(cpu: &mut Cpu) {
 }
 
 /// The primary surface's pixels as RGB, for a screenshot or the window.
+/// `DrawDibDraw`: the game draws a Windows bitmap on its window, as Z does with
+/// its title picture. `header` is a BITMAPINFOHEADER followed by its colours,
+/// and `bits` the pixels, or 0 when they follow the colours. Bitmaps of 8 and
+/// 24 bits a pixel are drawn, from the top left, cut to the game's screen.
+pub fn draw_dib(cpu: &mut Cpu, header: u32, bits: u32) -> bool {
+    let (width, height, depth) = (cpu.r32(header + 4), cpu.r32(header + 8) as i32, cpu.r16(header + 14) as u32);
+    if depth != 8 && depth != 24 || width == 0 || height == 0 || width > 4096 || height.unsigned_abs() > 4096 {
+        return false;
+    }
+    let colors = if depth == 8 { match cpu.r32(header + 32) { 0 => 256, used => used.min(256) } } else { 0 };
+    let table = header + cpu.r32(header);
+    let bits = if bits != 0 { bits } else { table + colors * 4 };
+    let stride = (width * depth / 8 + 3) & !3;
+    let to_565 = |blue: u8, green: u8, red: u8| (red as u16 >> 3) << 11 | (green as u16 >> 2) << 5 | blue as u16 >> 3;
+    let (screen_width, screen_height) = (super::GAME_WIDTH as u32, super::GAME_HEIGHT as u32);
+    let mut picture = vec![0u16; (screen_width * screen_height) as usize];
+    for y in 0..height.unsigned_abs().min(screen_height) {
+        // A positive height means the rows are stored bottom first.
+        let row = bits + stride * if height > 0 { height as u32 - 1 - y } else { y };
+        for x in 0..width.min(screen_width) {
+            let at = if depth == 8 { table + cpu.r8(row + x) as u32 * 4 } else { row + x * 3 };
+            picture[(y * screen_width + x) as usize] = to_565(cpu.r8(at), cpu.r8(at + 1), cpu.r8(at + 2));
+        }
+    }
+    cpu.host.draw.window_picture = Some(picture);
+    cpu.host.draw.frames += 1;
+    true
+}
+
 pub fn current_frame(cpu: &Cpu) -> Option<(u32, u32, Vec<u8>)> {
+    if let Some(picture) = &cpu.host.draw.window_picture {
+        let bytes = picture.iter().flat_map(|p| [((p >> 11) as u32 * 255 / 31) as u8, ((p >> 5 & 63) as u32 * 255 / 63) as u8, ((p & 31) as u32 * 255 / 31) as u8]);
+        return Some((super::GAME_WIDTH as u32, super::GAME_HEIGHT as u32, bytes.collect()));
+    }
     let from_card = super::glide::front_from_card(cpu);
     let front = from_card.as_ref().map(|(width, height, pixels)| (*width, *height, &pixels[..]));
     if let Some((width, height, pixels)) = front.or_else(|| super::glide::front(cpu)) {

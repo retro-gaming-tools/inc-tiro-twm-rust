@@ -49,6 +49,19 @@ pub fn find_winmm(name: &str) -> Option<GuestFn> {
         "midiOutUnprepareHeader" 3 |cpu| { let at = cpu.arg(1) + HEADER_FLAGS; let flags = cpu.r32(at); cpu.w32(at, flags & !PREPARED); 0 }
         "midiOutReset" 1 |_cpu| { 0 }
         "midiOutSetVolume" 2 |_cpu| { 0 }
+        "timeSetEvent" 5 |cpu| { super::timers::set_event(cpu) }
+        "timeKillEvent" 1 |cpu| { super::timers::kill_event(cpu) }
+    }
+}
+
+/// Video for Windows draws pictures into the window with GDI. The window only
+/// shows DirectDraw's frames so far, so these succeed and draw nothing.
+pub fn find_video_for_windows(name: &str) -> Option<GuestFn> {
+    table! { name;
+        "DrawDibOpen" 0 |cpu| { cpu.host.handle() }
+        "DrawDibBegin" 8 |_cpu| { 1 }
+        "DrawDibDraw" 13 |cpu| { let (header, bits) = (cpu.arg(6), cpu.arg(7)); u32::from(super::ddraw::draw_dib(cpu, header, bits)) }
+        "DrawDibClose" 1 |_cpu| { 1 }
     }
 }
 

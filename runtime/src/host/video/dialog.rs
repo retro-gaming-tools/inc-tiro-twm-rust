@@ -13,8 +13,12 @@
 //! held when it opened, such as the Escape that asked, go to the game after
 //! it closes, and so do the sticks' and triggers' last positions, so nothing
 //! stays held there.
+//!
+//! A mod can give it the game's own fonts and colours with
+//! `host::set_dialog_fonts`; otherwise it uses SDL's debug font.
 
 use super::*;
+use crate::host::bitmap_font::{BitmapFont, DialogFonts, DialogFrame};
 
 const PANEL_WIDTH: f32 = 460.0;
 const PADDING: f32 = 20.0;
@@ -49,20 +53,81 @@ const BUTTON_DPAD_LEFT: u8 = 13;
 const BUTTON_DPAD_RIGHT: u8 = 14;
 const AXES: usize = 6;
 
-/// Where the panel's parts go, in game pixels.
+/// Where the panel's parts go, in game pixels. Text positions are the top
+/// left of the text.
 struct Layout {
     panel: [f32; 4],
-    title: (f32, f32),
-    lines: Vec<(f32, f32, CString)>,
+    title: (f32, f32, String),
+    lines: Vec<(f32, f32, String)>,
     buttons: [[f32; 4]; 2],
+    /// In a game's window picture, with the answers as a list.
+    framed: bool,
+}
+
+const PIXELFORMAT_ARGB8888: u32 = 0x1636_2004;
+const TEXTUREACCESS_STATIC: c_int = 0;
+/// Room inside a game window's dark inside, and between its text and list.
+const FRAME_INSET: f32 = 6.0;
+const FRAME_GAP: f32 = 10.0;
+/// A list answer's height beyond its font's.
+const ANSWER_ROOM: f32 = 8.0;
+
+/// A font the dialog draws with: SDL's debug font at a scale, or the game's
+/// own, when a mod gave it (`host::set_dialog_fonts`).
+#[derive(Clone, Copy)]
+enum Face<'a> {
+    Debug(f32),
+    Bitmap(&'a BitmapFont),
+}
+
+impl Face<'_> {
+    fn width(&self, text: &str) -> f32 {
+        match self {
+            Face::Debug(scale) => printable(text).as_bytes().len() as f32 * GLYPH * scale,
+            Face::Bitmap(font) => font.width(text) as f32,
+        }
+    }
+
+    fn height(&self) -> f32 {
+        match self {
+            Face::Debug(scale) => GLYPH * scale,
+            Face::Bitmap(font) => {
+                let (above, below) = font.extent();
+                (above + below) as f32
+            }
+        }
+    }
+
+    /// From one line's top to the next.
+    fn line(&self) -> f32 {
+        match self {
+            Face::Debug(_) => LINE,
+            Face::Bitmap(_) => self.height() + 3.0,
+        }
+    }
+}
+
+/// The faces for the title, the text and the buttons.
+fn faces(fonts: Option<&DialogFonts>) -> [Face<'_>; 3] {
+    match fonts {
+        Some(fonts) => [Face::Bitmap(&fonts.title), Face::Bitmap(&fonts.text), Face::Bitmap(&fonts.button)],
+        None => [Face::Debug(TITLE_SCALE), Face::Debug(1.0), Face::Debug(1.0)],
+    }
 }
 
 /// Breaks the text into lines of at most `width` characters, at spaces.
+#[cfg(test)]
 pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
+    wrap_measured(text, width as f32, |line| line.len() as f32)
+}
+
+/// Breaks the text into lines no wider than `width` as `measure` measures
+/// them, at spaces. A word wider than a line gets one of its own.
+fn wrap_measured(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     for word in text.split_whitespace() {
-        if !line.is_empty() && line.len() + 1 + word.len() > width {
+        if !line.is_empty() && measure(&format!("{line} {word}")) > width {
             lines.push(std::mem::take(&mut line));
         }
         if !line.is_empty() {
@@ -81,31 +146,67 @@ fn printable(text: &str) -> CString {
     CString::new(text.chars().map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '?' }).collect::<String>()).unwrap()
 }
 
-fn layout(title: &str, text: &str) -> Layout {
-    let columns = ((PANEL_WIDTH - 2.0 * PADDING) / GLYPH) as usize;
-    let wrapped = wrap(text, columns);
-    let title_height = GLYPH * TITLE_SCALE;
-    let height = PADDING + title_height + PADDING + wrapped.len() as f32 * LINE + PADDING + BUTTON_HEIGHT + PADDING;
+/// The question in a game's window: the title centred on its title place,
+/// the text and then the answers, one under the other, centred in its inside.
+fn framed_layout(title: &str, text: &str, fonts: &DialogFonts, frame: &DialogFrame) -> Layout {
+    let [title_face, text_face, button_face] = faces(Some(fonts));
+    let left = ((WIDTH as f32 - frame.width as f32) / 2.0).floor();
+    let top = ((HEIGHT as f32 - frame.height as f32) / 2.0).floor();
+    let [inside_x, inside_y, inside_width, inside_height] = frame.inside.map(|value| value as f32);
+    let wrapped = wrap_measured(text, inside_width - 2.0 * FRAME_INSET, |line| text_face.width(line));
+    let line = text_face.line();
+    let answer = button_face.height() + ANSWER_ROOM;
+    let block = wrapped.len() as f32 * line + FRAME_GAP + 2.0 * answer;
+    let centre = left + inside_x + inside_width / 2.0;
+    let mut y = top + inside_y + ((inside_height - block) / 2.0).max(0.0).floor();
+    let mut lines = Vec::new();
+    for text in wrapped {
+        lines.push(((centre - text_face.width(&text) / 2.0).floor(), y, text));
+        y += line;
+    }
+    y += FRAME_GAP;
+    let answer_rect = |y: f32| [left + inside_x + FRAME_INSET, y, inside_width - 2.0 * FRAME_INSET, answer];
+    Layout {
+        panel: [left, top, frame.width as f32, frame.height as f32],
+        title: ((centre - title_face.width(title) / 2.0).floor(), top + frame.title_centre as f32 - (title_face.height() / 2.0).floor(), title.to_string()),
+        lines,
+        buttons: [answer_rect(y), answer_rect(y + answer)],
+        framed: true,
+    }
+}
+
+fn layout(title: &str, text: &str, fonts: Option<&DialogFonts>) -> Layout {
+    if let Some(fonts) = fonts {
+        if let Some(frame) = &fonts.frame {
+            return framed_layout(title, text, fonts, frame);
+        }
+    }
+    let [title_face, text_face, _] = faces(fonts);
+    let wrapped = wrap_measured(text, PANEL_WIDTH - 2.0 * PADDING, |line| text_face.width(line));
+    let title_height = title_face.height();
+    let line = text_face.line();
+    let height = PADDING + title_height + PADDING + wrapped.len() as f32 * line + PADDING + BUTTON_HEIGHT + PADDING;
     let left = (WIDTH as f32 - PANEL_WIDTH) / 2.0;
     let top = ((HEIGHT as f32 - height) / 2.0).floor();
     let centre = WIDTH as f32 / 2.0;
-    let title_width = title.chars().count() as f32 * GLYPH * TITLE_SCALE;
+    let title_width = title_face.width(title);
     let text_top = top + PADDING + title_height + PADDING;
     let lines = wrapped
-        .iter()
+        .into_iter()
         .enumerate()
-        .map(|(row, line)| (left + PADDING, text_top + row as f32 * LINE, printable(line)))
-        .collect();
-    let button_top = text_top + wrapped.len() as f32 * LINE + PADDING;
+        .map(|(row, text)| (left + PADDING, text_top + row as f32 * line, text))
+        .collect::<Vec<_>>();
+    let button_top = text_top + lines.len() as f32 * line + PADDING;
     let first = centre - BUTTON_GAP / 2.0 - BUTTON_WIDTH;
     Layout {
         panel: [left, top, PANEL_WIDTH, height],
-        title: ((centre - title_width / 2.0).max(left + PADDING), top + PADDING),
+        title: ((centre - title_width / 2.0).floor().max(left + PADDING), top + PADDING, title.to_string()),
         lines,
         buttons: [
             [first, button_top, BUTTON_WIDTH, BUTTON_HEIGHT],
             [centre + BUTTON_GAP / 2.0, button_top, BUTTON_WIDTH, BUTTON_HEIGHT],
         ],
+        framed: false,
     }
 }
 
@@ -118,7 +219,47 @@ fn button_at(layout: &Layout, x: f32, y: f32) -> Option<usize> {
 }
 
 impl Video {
-    fn draw_dialog(&self, layout: &Layout, title: &CString, labels: &[CString; 2], selected: usize) {
+    /// Draws text with its top left at `x`, `top`, its body in `body`.
+    fn draw_text(&self, face: Face, x: f32, top: f32, text: &str, body: [u8; 3]) {
+        let r = self.renderer;
+        unsafe {
+            match face {
+                Face::Debug(scale) => {
+                    (self.set_color)(r, body[0], body[1], body[2], 255);
+                    (self.set_scale)(r, scale, scale);
+                    (self.debug_text)(r, x / scale, top / scale, printable(text).as_ptr());
+                    (self.set_scale)(r, 1.0, 1.0);
+                }
+                Face::Bitmap(font) => {
+                    let (above, _) = font.extent();
+                    for (run_x, run_y, length, ink) in font.runs(text, x as i32, top as i32 + above) {
+                        let [red, green, blue] = if ink == 1 { body } else { font.shade };
+                        (self.set_color)(r, red, green, blue, 255);
+                        let rect = [run_x as f32, run_y as f32, length as f32, 1.0];
+                        (self.fill_rect)(r, rect.as_ptr());
+                    }
+                }
+            }
+        }
+    }
+
+    /// The game's window picture as a texture, for one question. Destroy it
+    /// with `destroy_texture` when the question closes.
+    fn frame_texture(&self, fonts: Option<&DialogFonts>) -> Option<Pointer> {
+        let frame = fonts?.frame.as_ref()?;
+        unsafe {
+            let texture = (self.create_texture)(self.renderer, PIXELFORMAT_ARGB8888, TEXTUREACCESS_STATIC, frame.width as c_int, frame.height as c_int);
+            if texture.is_null() {
+                return None;
+            }
+            (self.update_texture)(texture, std::ptr::null(), frame.pixels.as_ptr() as *const c_void, (frame.width * 4) as c_int);
+            (self.set_texture_blend)(texture, BLEND_ALPHA);
+            Some(texture)
+        }
+    }
+
+    fn draw_dialog(&self, layout: &Layout, labels: &[&str; 2], selected: usize, fonts: Option<&DialogFonts>, frame: Option<Pointer>) {
+        let [title_face, text_face, button_face] = faces(fonts);
         unsafe {
             let r = self.renderer;
             if self.gl.is_some() {
@@ -134,38 +275,63 @@ impl Video {
             (self.set_color)(r, 0, 0, 0, 150);
             let whole = [0.0, 0.0, WIDTH as f32, HEIGHT as f32];
             (self.fill_rect)(r, whole.as_ptr());
-            (self.set_color)(r, 20, 24, 32, 235);
-            (self.fill_rect)(r, layout.panel.as_ptr());
-            let [x, y, w, h] = layout.panel;
-            (self.set_color)(r, 150, 160, 180, 255);
-            for (x1, y1, x2, y2) in [(x, y, x + w - 1.0, y), (x, y + h - 1.0, x + w - 1.0, y + h - 1.0), (x, y, x, y + h - 1.0), (x + w - 1.0, y, x + w - 1.0, y + h - 1.0)] {
-                (self.draw_line)(r, x1, y1, x2, y2);
+            match frame.filter(|_| layout.framed) {
+                Some(texture) => {
+                    (self.render_texture)(r, texture, std::ptr::null(), layout.panel.as_ptr() as *const c_void);
+                }
+                None => {
+                    (self.set_color)(r, 20, 24, 32, 235);
+                    (self.fill_rect)(r, layout.panel.as_ptr());
+                    let [x, y, w, h] = layout.panel;
+                    (self.set_color)(r, 150, 160, 180, 255);
+                    for (x1, y1, x2, y2) in [(x, y, x + w - 1.0, y), (x, y + h - 1.0, x + w - 1.0, y + h - 1.0), (x, y, x, y + h - 1.0), (x + w - 1.0, y, x + w - 1.0, y + h - 1.0)] {
+                        (self.draw_line)(r, x1, y1, x2, y2);
+                    }
+                }
             }
-            (self.set_color)(r, 255, 220, 120, 255);
-            (self.set_scale)(r, TITLE_SCALE, TITLE_SCALE);
-            (self.debug_text)(r, layout.title.0 / TITLE_SCALE, layout.title.1 / TITLE_SCALE, title.as_ptr());
-            (self.set_scale)(r, 1.0, 1.0);
-            (self.set_color)(r, 230, 230, 230, 255);
+            // The game's fonts come with its colours; the debug font keeps
+            // the runtime's own.
+            let (title_colour, text_colour) = match fonts {
+                Some(fonts) => (fonts.title.body, fonts.text.body),
+                None => ([255, 220, 120], [230, 230, 230]),
+            };
+            let (title_x, title_y, title) = &layout.title;
+            self.draw_text(title_face, *title_x, *title_y, title, title_colour);
             for (x, y, line) in &layout.lines {
-                (self.debug_text)(r, *x, *y, line.as_ptr());
+                self.draw_text(text_face, *x, *y, line, text_colour);
             }
             for (index, rect) in layout.buttons.iter().enumerate() {
                 let chosen = index == selected;
-                if chosen {
-                    (self.set_color)(r, 230, 180, 70, 255);
-                } else {
-                    (self.set_color)(r, 60, 66, 82, 255);
+                if let (true, Some(fonts)) = (layout.framed, fonts) {
+                    // A list entry, as the game's save slots: only its text,
+                    // lit when chosen.
+                    let label = labels[index];
+                    let colour = if chosen { fonts.selected } else { fonts.button.body };
+                    let (text_x, text_y) = (rect[0] + (rect[2] - button_face.width(label)) / 2.0, rect[1] + (rect[3] - button_face.height()) / 2.0);
+                    self.draw_text(button_face, text_x.floor(), text_y.floor(), label, colour);
+                    continue;
                 }
+                // With the game's light text, the chosen button is a lighter
+                // grey with a frame, rather than the bright yellow of the
+                // debug font's dark text.
+                let (fill, label_colour) = match (fonts, chosen) {
+                    (Some(fonts), true) => ([88, 94, 112], fonts.selected),
+                    (Some(fonts), false) => ([44, 48, 60], fonts.button.body),
+                    (None, true) => ([230, 180, 70], [20, 20, 20]),
+                    (None, false) => ([60, 66, 82], [230, 230, 230]),
+                };
+                (self.set_color)(r, fill[0], fill[1], fill[2], 255);
                 (self.fill_rect)(r, rect.as_ptr());
-                let label = &labels[index];
-                let width = label.as_bytes().len() as f32 * GLYPH;
-                let (text_x, text_y) = (rect[0] + (rect[2] - width) / 2.0, rect[1] + (rect[3] - GLYPH) / 2.0);
-                if chosen {
-                    (self.set_color)(r, 20, 20, 20, 255);
-                } else {
-                    (self.set_color)(r, 230, 230, 230, 255);
+                if chosen && fonts.is_some() {
+                    let [x, y, w, h] = *rect;
+                    (self.set_color)(r, 200, 196, 200, 255);
+                    for (x1, y1, x2, y2) in [(x, y, x + w - 1.0, y), (x, y + h - 1.0, x + w - 1.0, y + h - 1.0), (x, y, x, y + h - 1.0), (x + w - 1.0, y, x + w - 1.0, y + h - 1.0)] {
+                        (self.draw_line)(r, x1, y1, x2, y2);
+                    }
                 }
-                (self.debug_text)(r, text_x.floor(), text_y.floor(), label.as_ptr());
+                let label = labels[index];
+                let (text_x, text_y) = (rect[0] + (rect[2] - button_face.width(label)) / 2.0, rect[1] + (rect[3] - button_face.height()) / 2.0);
+                self.draw_text(button_face, text_x.floor(), text_y.floor(), label, label_colour);
             }
             (self.set_blend)(r, BLEND_NONE);
             if self.gl.is_none() {
@@ -188,8 +354,13 @@ struct Held {
 
 /// Draws the question over the last frame and leaves it there, for scripted runs.
 pub(super) fn show_once(cpu: &mut Cpu, title: &str, text: &str, yes: &str, no: &str) {
+    let fonts = cpu.host.dialog_fonts.clone();
     let Some(video) = cpu.host.video.as_mut() else { return };
-    video.draw_dialog(&layout(title, text), &printable(title), &[printable(yes), printable(no)], NO);
+    let frame = video.frame_texture(fonts.as_deref());
+    video.draw_dialog(&layout(title, text, fonts.as_deref()), &[yes, no], NO, fonts.as_deref(), frame);
+    if let Some(texture) = frame {
+        unsafe { (video.destroy_texture)(texture) };
+    }
     video.present_gl(Picture::Last, true);
     video.shown_frame = None;
     // The game draws over it at once, so the picture is taken here.
@@ -201,10 +372,11 @@ pub(super) fn show_once(cpu: &mut Cpu, title: &str, text: &str, yes: &str, no: &
 }
 
 pub(super) fn run(cpu: &mut Cpu, title: &str, text: &str, yes: &str, no: &str) -> bool {
+    let fonts = cpu.host.dialog_fonts.clone();
     let mut video = cpu.host.video.take().unwrap();
-    let layout = layout(title, text);
-    let title = printable(title);
-    let labels = [printable(yes), printable(no)];
+    let layout = layout(title, text, fonts.as_deref());
+    let labels = [yes, no];
+    let frame = video.frame_texture(fonts.as_deref());
     unsafe {
         // The game draws its own pointer and hides the system's.
         (video.set_relative)(video.window, false);
@@ -334,13 +506,18 @@ pub(super) fn run(cpu: &mut Cpu, title: &str, text: &str, yes: &str, no: &str) -
                 _ => {}
             }
         }
-        video.draw_dialog(&layout, &title, &labels, selected);
+        video.draw_dialog(&layout, &labels, selected, fonts.as_deref(), frame);
         video.present_gl(Picture::Last, true);
         if !video.vsync {
             std::thread::sleep(REFRESH);
         }
     };
-    unsafe { (video.hide_cursor)() };
+    unsafe {
+        (video.hide_cursor)();
+        if let Some(texture) = frame {
+            (video.destroy_texture)(texture);
+        }
+    }
     // The game's frame goes back on screen at its next swap or flip.
     video.shown_frame = None;
     cpu.host.video = Some(video);
@@ -369,7 +546,7 @@ mod tests {
     #[test]
     fn buttons_fit_inside_the_panel_and_the_screen() {
         let text = "Do you really want to give up? All your units will be lost, and so will the mission.";
-        let layout = layout("Give up the mission?", text);
+        let layout = layout("Give up the mission?", text, None);
         let [x, y, w, h] = layout.panel;
         assert!(x >= 0.0 && y >= 0.0 && x + w <= WIDTH as f32 && y + h <= HEIGHT as f32);
         for button in &layout.buttons {
@@ -378,7 +555,36 @@ mod tests {
         }
         assert_eq!(button_at(&layout, layout.buttons[NO][0] + 1.0, layout.buttons[NO][1] + 1.0), Some(NO));
         assert_eq!(button_at(&layout, x + 1.0, y + 1.0), None);
-        assert!(layout.lines.iter().all(|(_, _, line)| line.as_bytes().len() as f32 * GLYPH <= w - 2.0 * PADDING));
+        assert!(layout.lines.iter().all(|(_, _, line)| line.len() as f32 * GLYPH <= w - 2.0 * PADDING));
+    }
+
+    #[test]
+    fn a_game_window_holds_the_text_and_the_answers() {
+        use crate::host::bitmap_font::Glyph;
+        // Every letter a 5 by 9 block, about as wide as Incubation's fonts.
+        let font = || BitmapFont {
+            glyphs: (0..256).map(|byte| (byte > 32).then(|| Glyph { width: 5, height: 9, anchor_x: 0, anchor_y: 7, inks: vec![1; 45] })).collect(),
+            space: 4,
+            spacing: 1,
+            body: [200; 3],
+            shade: [100; 3],
+        };
+        let frame = DialogFrame { width: 247, height: 267, pixels: vec![0; 247 * 267], title_centre: 47, inside: [20, 80, 207, 158] };
+        let fonts = DialogFonts { title: font(), text: font(), button: font(), selected: [255; 3], frame: Some(frame) };
+        let text = "Willst du die Mission wirklich aufgeben? Alle deine Einheiten gehen verloren, und die Mission ist verloren.";
+        let layout = layout("Aufgeben?", text, Some(&fonts));
+        assert!(layout.framed);
+        let [x, y, ..] = layout.panel;
+        let inside = [x + 20.0, y + 80.0, 207.0, 158.0];
+        for (line_x, line_y, line) in &layout.lines {
+            assert!(*line_x >= inside[0] && line_x + fonts.text.width(line) as f32 <= inside[0] + inside[2], "{line}");
+            assert!(*line_y >= inside[1]);
+        }
+        for button in &layout.buttons {
+            assert!(button[0] >= inside[0] && button[0] + button[2] <= inside[0] + inside[2]);
+            assert!(button[1] + button[3] <= inside[1] + inside[3]);
+        }
+        assert_eq!(button_at(&layout, layout.buttons[YES][0] + 1.0, layout.buttons[YES][1] + 1.0), Some(YES));
     }
 
     #[test]

@@ -40,6 +40,15 @@ pub fn lift_function(start: u32, report: &Report, all_functions: &HashSet<u32>, 
     }
 }
 
+/// Whether the game has callbacks that Windows ran on a thread of its own,
+/// such as `timeSetEvent`'s. The translated game has one thread, so its loops
+/// let the runtime run them. Set once, before any function is lifted.
+pub static POLLS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn poll() -> &'static str {
+    if POLLS.load(std::sync::atomic::Ordering::Relaxed) { "cpu.poll(); " } else { "" }
+}
+
 struct Function<'a> {
     start: u32,
     report: &'a Report,
@@ -141,9 +150,13 @@ impl<'a> Function<'a> {
         }
     }
 
-    fn jump(&self, target: u32) -> String {
+    /// A jump from the instruction at `from`. A game with timer callbacks gets
+    /// a poll on every jump backwards, so a loop that only waits for a counter
+    /// the callback changes sees it change.
+    fn jump(&self, from: u32, target: u32) -> String {
         if self.blocks.contains_key(&target) {
-            format!("pc = {target:#x}; continue;")
+            let poll = if target <= from { poll() } else { "" };
+            format!("{poll}pc = {target:#x}; continue;")
         } else if self.all_functions.contains(&target) {
             format!("f_{target:08x}(cpu); return;")
         } else {
@@ -177,7 +190,7 @@ impl<'a> Function<'a> {
             if !ended {
                 let last = *block.addresses.last().unwrap();
                 let next = last + self.report.instructions[&last].len() as u32;
-                let _ = writeln!(text, "  {}", self.jump(next));
+                let _ = writeln!(text, "  {}", self.jump(last, next));
             }
             text.push_str(" }\n");
         }
@@ -188,7 +201,7 @@ impl<'a> Function<'a> {
     fn instruction(&self, address: u32, i: &Instruction, live: u32, stats: &mut Stats) -> String {
         let next = address + i.len() as u32;
         match i.flow_control() {
-            FlowControl::UnconditionalBranch => return self.jump(i.near_branch_target() as u32),
+            FlowControl::UnconditionalBranch => return self.jump(address, i.near_branch_target() as u32),
             FlowControl::ConditionalBranch => {
                 let name = format!("{:?}", i.mnemonic());
                 let condition = match i.mnemonic() {
@@ -200,7 +213,7 @@ impl<'a> Function<'a> {
                     Mnemonic::Loopne => "{ cpu.ecx = cpu.ecx.wrapping_sub(1); cpu.ecx != 0 && !cpu.zf }".to_string(),
                     _ => condition(&name[1..]),
                 };
-                return format!("if {condition} {{ {} }}", self.jump(i.near_branch_target() as u32));
+                return format!("if {condition} {{ {} }}", self.jump(address, i.near_branch_target() as u32));
             }
             FlowControl::Call => {
                 let target = i.near_branch_target() as u32;
@@ -210,7 +223,7 @@ impl<'a> Function<'a> {
                 return format!("cpu.push({next:#x}); cpu.call({target:#x});");
             }
             FlowControl::IndirectCall => return format!("let t = {}; cpu.push({next:#x}); cpu.call(t);", read(i, 0, 4)),
-            FlowControl::IndirectBranch => return format!("pc = {}; continue;", read(i, 0, 4)),
+            FlowControl::IndirectBranch => return format!("{}pc = {}; continue;", poll(), read(i, 0, 4)),
             FlowControl::Return => {
                 if i.mnemonic() != Mnemonic::Ret {
                     return missing(address, i, stats);
@@ -448,6 +461,26 @@ fn translate(i: &Instruction, live: u32) -> Option<String> {
             let helper = if i.mnemonic() == M::Shld { "shld32" } else { "shrd32" };
             write_to(i, 0, &format!("cpu.{helper}({}, {}, {count})", read(i, 0, 4), read(i, 1, 4)))
         }
+        M::Shld | M::Shrd if size == 2 => {
+            let count = match i.op_kind(2) {
+                OpKind::Register => "(cpu.ecx & 31)".to_string(),
+                _ => format!("{}u32", i.immediate(2) as u8 & 31),
+            };
+            // Both halves side by side in 32 bits, so one shift moves the bits across.
+            let (wide, result, carry) = if i.mnemonic() == M::Shld {
+                ("((a << 16) | b) << n", "(wide >> 16) as u16", "(a >> (16 - n)) & 1 != 0")
+            } else {
+                ("((b << 16) | a) >> n", "wide as u16", "(a >> (n - 1)) & 1 != 0")
+            };
+            format!(
+                "let a = {} as u32; let b = {} as u32; let n = {count}; if n != 0 && n <= 16 {{ let wide: u32 = {wide}; let r = {result}; cpu.cf = {carry}; cpu.zf = r == 0; cpu.sf = r & 0x8000 != 0; cpu.parity = r as u8; {} }}",
+                read(i, 0, 2),
+                read(i, 1, 2),
+                write_to(i, 0, "r")
+            )
+        }
+        M::Pushf => "let v = cpu.flags() as u16; cpu.esp = cpu.esp.wrapping_sub(2); cpu.w16(cpu.esp, v);".to_string(),
+        M::Popf => "let v = cpu.r16(cpu.esp) as u32; cpu.esp = cpu.esp.wrapping_add(2); cpu.set_flags(v);".to_string(),
         M::Mul => format!("let v = {}; cpu.mul{bits}(v);", read(i, 0, size)),
         M::Div => format!("let v = {}; cpu.div{bits}(v);", read(i, 0, size)),
         M::Idiv => format!("let v = {}; cpu.idiv{bits}(v);", read(i, 0, size)),

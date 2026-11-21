@@ -6,13 +6,13 @@ mod mods;
 use recomp_runtime::{loader, GuestFn};
 
 static MODULES: &[loader::Module] = &[
-    loader::Module { file: "Incubation.exe", base: 0x400000, sha256: "b07aa2478fbfaf252a585cff180d03b468d5141e0fdb5606bd09f0891024fcc9" },
-    loader::Module { file: "NewToolsR.dll", base: 0x11000000, sha256: "8b0b27626bc26e54742ab41deef740772fc935286f83c3cfbd960d1a8035432d" },
-    loader::Module { file: "MSVCRT.DLL", base: 0x12000000, sha256: "3a4cb4631f9ecd6f3f6013bc0459fca2e305a0ad00dbf34cb46e6f52d96d9d62" },
-    loader::Module { file: "msvcirt.dll", base: 0x13000000, sha256: "e95f8644a520dd35808a0f3b08de270bf18f82d9f60327314d23c0c2acb27c54" },
-    loader::Module { file: "ENGWLIB.DLL", base: 0x14000000, sha256: "df3849404142510b050f0b458300300ec108cadeae865ef3fd8e66de559cd120" },
-    loader::Module { file: "ENG3DFX.DLL", base: 0x15000000, sha256: "e0109d27e034c3e617c6322e19e8fa3665c2bc0e9914732833dceb308d20f016" },
-    loader::Module { file: "Eng3d.dll", base: 0x16000000, sha256: "0bd5bd242a4a22fde5b61da55b5ba373cf5ab5fe9079a3c36804dc1b9a722b83" },
+    loader::Module { file: "Incubation.exe", base: 0x400000, sha256: "b07aa2478fbfaf252a585cff180d03b468d5141e0fdb5606bd09f0891024fcc9", name: "GOG release 1.52e" },
+    loader::Module { file: "NewToolsR.dll", base: 0x11000000, sha256: "8b0b27626bc26e54742ab41deef740772fc935286f83c3cfbd960d1a8035432d", name: "" },
+    loader::Module { file: "MSVCRT.DLL", base: 0x12000000, sha256: "3a4cb4631f9ecd6f3f6013bc0459fca2e305a0ad00dbf34cb46e6f52d96d9d62", name: "" },
+    loader::Module { file: "msvcirt.dll", base: 0x13000000, sha256: "e95f8644a520dd35808a0f3b08de270bf18f82d9f60327314d23c0c2acb27c54", name: "" },
+    loader::Module { file: "ENGWLIB.DLL", base: 0x14000000, sha256: "df3849404142510b050f0b458300300ec108cadeae865ef3fd8e66de559cd120", name: "" },
+    loader::Module { file: "ENG3DFX.DLL", base: 0x15000000, sha256: "e0109d27e034c3e617c6322e19e8fa3665c2bc0e9914732833dceb308d20f016", name: "" },
+    loader::Module { file: "Eng3d.dll", base: 0x16000000, sha256: "0bd5bd242a4a22fde5b61da55b5ba373cf5ab5fe9079a3c36804dc1b9a722b83", name: "" },
 ];
 
 static TABLE: &[(u32, GuestFn)] = &[
@@ -9051,13 +9051,15 @@ static GAME: loader::Game = loader::Game {
     switches: &[("--addon", 0x400ff0, "Wilderness Missions")],
     renderers: &[("-3dfx", "Glide"), ("-directx", "Software")],
     languages: &[("-english", "English"), ("-german", "German")],
-    mods: &[("frame_limiter", "Smooth frame pacing", true, true), ("give_up", "Ask before giving up", true, false)],
+    mods: &[loader::ModRow { file: "frame_limiter", label: "Frame rate", values: &["Original", "30", "60"], default: 1, advanced: false }, loader::ModRow { file: "give_up", label: "Ask before giving up", values: &["Off", "On"], default: 1, advanced: false }],
+    checks: &[mods::language_check::english_texts],
     modules: MODULES,
     table: TABLE,
     icon: include_bytes!("../icon.rgba"),
     music: &[("music/Track", 0x514274, 1), ("music/Arack", 0x0, 0)],
     registry: &[],
     cd: "",
+    theme: "style=leather;background=17161a;panel=1e1d21;selected=2e2c31;border=8e8882;text=cecace;value=f2ece4;good=46c85a;bad=e2503c;dim=7e7872",
 };
 
 fn main() {

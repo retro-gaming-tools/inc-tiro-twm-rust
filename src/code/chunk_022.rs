@@ -19293,7 +19293,7 @@ pub fn f_1202a49c(cpu: &mut Cpu) {
   { let v: u32 = cpu.eax & 0x2c12029du32; cpu.eax = v; }
   { let v = cpu.pop(); cpu.set_flags(v); }
   { let v: u8 = (cpu.edx as u8).wrapping_add(cpu.r8(0x0u32.wrapping_add(cpu.edx))); cpu.edx = (cpu.edx & 0xffffff00) | v as u32; }
-  cpu.unimplemented(0x1202a4b4, "Popf");
+  { let v = cpu.r16(cpu.esp) as u32; cpu.esp = cpu.esp.wrapping_add(2); cpu.set_flags(v); }
   { let v: u8 = cpu.add8((cpu.edx as u8), cpu.r8(0x0u32.wrapping_add(cpu.edx))); cpu.edx = (cpu.edx & 0xffffff00) | v as u32; }
   if { cpu.ecx = cpu.ecx.wrapping_sub(1); cpu.ecx != 0 && cpu.zf } { pc = 0x1202a457; continue; }
   pc = 0x1202a4ba; continue;

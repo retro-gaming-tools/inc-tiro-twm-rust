@@ -1,7 +1,10 @@
 //! Replacements for the Windows functions a game imports.
 
 pub mod audio;
+pub mod bitmap_font;
 pub mod ddraw;
+pub mod dinput;
+pub mod disc;
 pub mod gamepad;
 mod gl;
 pub mod glide;
@@ -13,6 +16,7 @@ mod other;
 pub mod pool;
 pub mod registry;
 pub mod script;
+pub mod timers;
 mod user32;
 pub mod video;
 
@@ -83,12 +87,43 @@ pub fn pace_frames(cpu: &mut Cpu, fps: f64) {
 /// A mod with a launcher row checks this first, and calls the original when
 /// it's off, so turning it off gives the game as it was.
 pub fn mod_enabled(cpu: &Cpu, file: &str) -> bool {
-    !cpu.host.mods_off.contains(&file)
+    mod_choice(cpu, file) != Some(0)
+}
+
+/// The value chosen on a mod's launcher row, as an index into its values
+/// (for an On/Off row, 0 is Off), or `None` for a mod without a row.
+pub fn mod_choice(cpu: &Cpu, file: &str) -> Option<usize> {
+    cpu.host.mod_choices.iter().find(|(name, _)| *name == file).map(|(_, chosen)| *chosen)
+}
+
+/// How often the player pressed F9 in game (or the script's `f9` step ran),
+/// for a mod that steps through frame rates with it.
+pub fn f9_presses(cpu: &Cpu) -> u32 {
+    cpu.host.f9_presses
+}
+
+/// Shows a short line over the game for three seconds, in the frame
+/// counter's style, such as which frame rate F9 chose. Scripted runs log it.
+pub fn show_note(cpu: &mut Cpu, text: &str) {
+    println!("note: {text}");
+    if let Some(video) = cpu.host.video.as_mut() {
+        video.show_note(text);
+    }
 }
 
 /// Asks the player a yes or no question in a box, for mods. See `video::ask`.
 pub fn ask(cpu: &mut Cpu, title: &str, text: &str, yes: &str, no: &str) -> bool {
     video::ask(cpu, title, text, yes, no)
+}
+
+/// Gives `ask` the game's own fonts, read by a mod from the game's files.
+pub fn set_dialog_fonts(cpu: &mut Cpu, fonts: bitmap_font::DialogFonts) {
+    cpu.host.dialog_fonts = Some(std::rc::Rc::new(fonts));
+}
+
+/// Whether a mod has given `ask` the game's fonts yet.
+pub fn has_dialog_fonts(cpu: &Cpu) -> bool {
+    cpu.host.dialog_fonts.is_some()
 }
 
 /// The game's command line, as `recompCommand` and the launcher made it, such
@@ -245,11 +280,19 @@ pub struct State {
     /// Time between frames reaching the screen, in milliseconds, since the
     /// script's last `fps` step, which reports how even they were.
     pub shown_frames: Vec<f32>,
-    /// The optional mods the player turned off, by file name.
-    pub mods_off: Vec<&'static str>,
+    /// What the player chose on each mod's launcher row: file name and the
+    /// value's index (0 is Off).
+    pub mod_choices: Vec<(&'static str, usize)>,
+    /// Counted up by F9 in game. A mod that offers frame rates steps through
+    /// them with it, so they can be compared in one run.
+    pub f9_presses: u32,
+    /// The game's fonts for `ask`, when a mod gave them.
+    pub dialog_fonts: Option<std::rc::Rc<bitmap_font::DialogFonts>>,
     pub registry: registry::Registry,
     /// The volume label of the game's CD, which is drive D:, or empty for none.
     pub cd: &'static str,
+    pub input: dinput::Input,
+    pub timers: timers::Timers,
 }
 
 impl State {
@@ -292,10 +335,21 @@ impl State {
             frame_period: None,
             paced_since_limiter: false,
             shown_frames: Vec::new(),
-            mods_off: Vec::new(),
+            mod_choices: Vec::new(),
+            f9_presses: 0,
+            dialog_fonts: None,
             registry: registry::Registry::default(),
             cd: "",
+            input: dinput::Input::default(),
+            timers: timers::Timers::default(),
         }
+    }
+
+    /// Queues an input message for the window, and keeps what it says about
+    /// keys and buttons for games that poll DirectInput instead.
+    pub fn post(&mut self, message: (u32, u32, u32)) {
+        self.input.note(message.0, message.1);
+        self.messages.push_back(message);
     }
 
     pub fn handle(&mut self) -> u32 {
@@ -441,6 +495,7 @@ pub fn find(dll: &str, name: &str) -> Option<GuestFn> {
         "user32.dll" => user32::find_user(name),
         "gdi32.dll" => user32::find_gdi(name),
         "ddraw.dll" => ddraw::find(name),
+        "dinput.dll" => dinput::find(name),
         "glide2x.dll" => glide::find(name),
         "advapi32.dll" => registry::find(name),
         "dsound.dll" => audio::find_dsound(name),
@@ -448,6 +503,7 @@ pub fn find(dll: &str, name: &str) -> Option<GuestFn> {
         "audio.dll" => other::find_audio(name),
         "winmm.dll" => other::find_winmm(name),
         "comctl32.dll" => other::find_comctl(name),
+        "msvfw32.dll" => other::find_video_for_windows(name),
         _ => None,
     }
 }

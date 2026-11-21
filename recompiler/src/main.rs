@@ -97,11 +97,22 @@ fn write_crate(game: &str, info: &Info, modules: &[Module], chunks: &[String], m
     for name in ["icon.ico", "icon.rgba", "icon.png"] {
         std::fs::copy(Path::new("/port").join(name), root.join(name))?;
     }
-    write_if_changed(&root.join("icon.rc"), "1 ICON \"icon.ico\"\n")?;
     write_if_changed(&root.join("build.rs"), BUILD_SCRIPT)?;
 
     let version = std::env::var("RECOMP_VERSION").ok().filter(|v| !v.trim().is_empty()).unwrap_or("0.1".into());
     let version = version.trim();
+    // The launcher's header `TITLE - RUST - version` drops to 3/4 size when
+    // it's long, and holds 52 characters then (`HEADER_ROOM` in the
+    // runtime's `host/launcher.rs`). Longer would be cut off.
+    const HEADER_LONGEST: usize = 52;
+    let header = format!("{} - RUST - {version}", info.title);
+    if header.len() > HEADER_LONGEST {
+        return Err(std::io::Error::other(format!(
+            "the launcher's header \"{header}\" has {} characters, more than the {HEADER_LONGEST} that fit: shorten `title` or `recompVersion` in port.json",
+            header.len()
+        )));
+    }
+    write_if_changed(&root.join("icon.rc"), &resources(game, &info.title, version))?;
     write_if_changed(&root.join("VERSION"), &format!("{version}\n"))?;
     let semver = cargo_version(version);
     let cargo = format!(
@@ -122,7 +133,7 @@ fn write_crate(game: &str, info: &Info, modules: &[Module], chunks: &[String], m
 
     let mut main = String::from("#![windows_subsystem = \"windows\"]\n\nmod code;\nmod mods;\n\nuse recomp_runtime::{loader, GuestFn};\n\nstatic MODULES: &[loader::Module] = &[\n");
     for module in modules {
-        let _ = writeln!(main, "    loader::Module {{ file: \"{}\", base: {:#x}, sha256: \"{}\" }},", module.file, module.base, module.sha256);
+        let _ = writeln!(main, "    loader::Module {{ file: \"{}\", base: {:#x}, sha256: \"{}\", name: {:?} }},", module.file, module.base, module.sha256, version_name(&module.file));
     }
     main.push_str("];\n\nstatic TABLE: &[(u32, GuestFn)] = &[\n");
     for function in modules.iter().flat_map(|m| &m.functions) {
@@ -130,11 +141,57 @@ fn write_crate(game: &str, info: &Info, modules: &[Module], chunks: &[String], m
     }
     let _ = write!(
         main,
-        "];\n\nstatic GAME: loader::Game = loader::Game {{\n    title: \"{}\",\n    version: include_str!(\"../VERSION\").trim_ascii(),\n    needs: \"{}\",\n    command: \"{}\",\n    switches: &[{}],\n    renderers: &[{}],\n    languages: &[{}],\n    mods: &[{}],\n    modules: MODULES,\n    table: TABLE,\n    icon: include_bytes!(\"../icon.rgba\"),\n    music: &[{}],\n    registry: &[{}],\n    cd: {:?},\n}};\n\nfn main() {{\n    loader::run(&GAME);\n}}\n",
-        info.title, info.needs, info.command, switches(), choices("RECOMP_RENDERERS"), choices("RECOMP_LANGUAGES"), launcher_mods(mods), music(),
-        registry(), std::env::var("RECOMP_CD").unwrap_or_default()
+        "];\n\nstatic GAME: loader::Game = loader::Game {{\n    title: \"{}\",\n    version: include_str!(\"../VERSION\").trim_ascii(),\n    needs: \"{}\",\n    command: {:?},\n    switches: &[{}],\n    renderers: &[{}],\n    languages: &[{}],\n    mods: &[{}],\n    checks: &[{}],\n    modules: MODULES,\n    table: TABLE,\n    icon: include_bytes!(\"../icon.rgba\"),\n    music: &[{}],\n    registry: &[{}],\n    cd: {:?},\n    theme: {:?},\n}};\n\nfn main() {{\n    loader::run(&GAME);\n}}\n",
+        info.title, info.needs, info.command, switches(), choices("RECOMP_RENDERERS"), choices("RECOMP_LANGUAGES"), launcher_mods(mods), launcher_checks(mods), music(),
+        registry(), std::env::var("RECOMP_CD").unwrap_or_default(), std::env::var("RECOMP_THEME").unwrap_or_default()
     );
     write_if_changed(&source.join("main.rs"), &main)
+}
+
+/// The Windows resources linked into the exe: the icon, and version information
+/// (name, version, where it comes from), which Windows shows in the file's
+/// Properties and which virus scanners look for. An exe without it looks anonymous.
+fn resources(game: &str, title: &str, version: &str) -> String {
+    let quote = |text: &str| text.replace('"', "\"\"");
+    let numbers: Vec<u16> = version.split('-').next().unwrap_or("0").split('.').map(|n| n.parse().unwrap_or(0)).chain(std::iter::repeat(0)).take(4).collect();
+    let numbers = numbers.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
+    let repo = std::env::var("RECOMP_REPO").ok().map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
+    let company = repo.as_deref().and_then(|r| r.split('/').next()).unwrap_or("Rust recompilation");
+    let comments = repo.as_deref().map_or(String::new(), |r| format!("\n      VALUE \"Comments\", \"https://github.com/{r}\""));
+    let name = quote(&format!("{title} - Rust"));
+    format!(
+        r#"1 ICON "icon.ico"
+
+1 VERSIONINFO
+FILEVERSION {numbers}
+PRODUCTVERSION {numbers}
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "{company}"
+      VALUE "FileDescription", "{name}"
+      VALUE "ProductName", "{name}"
+      VALUE "FileVersion", "{version}"
+      VALUE "ProductVersion", "{version}"
+      VALUE "InternalName", "{game}-rust"
+      VALUE "OriginalFilename", "{game}-rust.exe"
+      VALUE "LegalCopyright", "{legal}"{comments}
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
+"#,
+        company = quote(company),
+        version = quote(version),
+        legal = quote(&format!("Port: see LICENSE. {title} belongs to its rights holders; no game data is included.")),
+    )
 }
 
 /// Cargo wants three numbers, so `0.5-beta` becomes `0.5.0-beta`.
@@ -203,13 +260,13 @@ It tells you which workflow run and which commit built the file.
 
 Each version has a tag `v<version>`, such as `v0.5-beta`.
 
-    ./changes.sh 0.4-beta 0.5-beta > changes.diff
+    ./changes.sh 0.5-beta 0.6-beta > changes.diff
 
 This lists the changelog entries, the commits and the files that changed, then the diff of everything written by hand: the runtime, the mods, the recompiler and the build. The translated code in `src/code/` is only summarised, because a regeneration rewrites much of it. Add `--code` for its full diff.
 
 ## Mods
 
-Each `.rs` file in `mods/` is hand-written Rust, and a `pub fn f_XXXXXXXX(cpu: &mut Cpu)` in one replaces the game's function at that address everywhere. The translated original stays callable as `o_XXXXXXXX`. Start a mod file with `use crate::code::*;` and `use recomp_runtime::Cpu;`. A line `//! launcher: LABEL` gives the mod an On/Off row in the launcher (`launcher-off:` for one that starts off, `launcher-advanced:` for one on the advanced page), and its functions then begin with `if !host::mod_enabled(cpu, "FILE") {{ return o_XXXXXXXX(cpu); }}`.
+Each `.rs` file in `mods/` is hand-written Rust, and a `pub fn f_XXXXXXXX(cpu: &mut Cpu)` in one replaces the game's function at that address everywhere. The translated original stays callable as `o_XXXXXXXX`. Start a mod file with `use crate::code::*;` and `use recomp_runtime::Cpu;`. A line `//! launcher: LABEL` gives the mod an On/Off row in the launcher (`launcher-off:` for one that starts off, `launcher-advanced:` for one on the advanced page), and its functions then begin with `if !host::mod_enabled(cpu, "FILE") {{ return o_XXXXXXXX(cpu); }}`. `//! launcher-choice: LABEL = A | *B | C` gives a row with several values (`*` marks the default), read with `host::mod_choice(cpu, "FILE")`.
 
 ## Licence
 
@@ -219,6 +276,15 @@ The code in `src/code/` is translated from the program files of the original gam
 
 Generated for `{game}` by the recompiler in `recompiler/`.
 "#)
+}
+
+/// The name players know a program's version by, from `recompVersionNames`
+/// in `port.json` (`RECOMP_VERSION_NAMES`, `FILE=NAME` entries separated by
+/// semicolons). The launcher shows it for the version it finds. Empty when
+/// none is given.
+fn version_name(file: &str) -> String {
+    let text = std::env::var("RECOMP_VERSION_NAMES").unwrap_or_default();
+    text.split(';').filter_map(|entry| entry.split_once('=')).find(|(key, _)| key.trim() == file).map(|(_, name)| name.trim().to_string()).unwrap_or_default()
 }
 
 /// `recompSwitches` from `port.json`, as Rust: each is a command-line switch, the
@@ -293,6 +359,12 @@ fn music() -> String {
 /// launcher's advanced page, for what most players should leave alone. Its
 /// functions then check `host::mod_enabled(cpu, "FILE")` and hand over to the
 /// original when the player turned it off. A file without one is always on.
+/// `//! launcher-choice: LABEL = A | *B | C` gives a row with several values
+/// instead, `*` marking the default; `host::mod_choice(cpu, "FILE")` is the
+/// chosen value's index, and `mod_enabled` is false only for the first.
+/// `//! launcher-check: FUNCTION` names a `pub fn FUNCTION(&loader::Choices)
+/// -> Option<[String; 2]>` in the file that the launcher calls when the
+/// folder or a setting changes; what it returns is shown as a warning.
 fn find_mods(folder: &Path) -> Result<(Vec<Mod>, BTreeSet<u32>), String> {
     let mut files = Vec::new();
     let mut overrides = BTreeSet::new();
@@ -305,13 +377,23 @@ fn find_mods(folder: &Path) -> Result<(Vec<Mod>, BTreeSet<u32>), String> {
         }
         let text = std::fs::read_to_string(entry.path()).map_err(|error| format!("mods/{name}: {error}"))?;
         let mut launcher = None;
+        let mut checks = Vec::new();
+        let on_off = |label: &str, on: bool, advanced: bool| Row { label: label.trim().replace('"', "'"), values: vec!["Off".into(), "On".into()], default: on as usize, advanced };
         for line in text.lines() {
             if let Some(label) = line.trim().strip_prefix("//! launcher:") {
-                launcher = Some((label.trim().replace('"', "'"), true, false));
+                launcher = Some(on_off(label, true, false));
             } else if let Some(label) = line.trim().strip_prefix("//! launcher-off:") {
-                launcher = Some((label.trim().replace('"', "'"), false, false));
+                launcher = Some(on_off(label, false, false));
             } else if let Some(label) = line.trim().strip_prefix("//! launcher-advanced:") {
-                launcher = Some((label.trim().replace('"', "'"), true, true));
+                launcher = Some(on_off(label, true, true));
+            } else if let Some(row) = line.trim().strip_prefix("//! launcher-choice:") {
+                launcher = Some(choice_row(row).map_err(|problem| format!("mods/{name}: {problem}"))?);
+            } else if let Some(function) = line.trim().strip_prefix("//! launcher-check:") {
+                let function = function.trim();
+                if function.is_empty() || !function.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    return Err(format!("mods/{name}: write a check as `//! launcher-check: FUNCTION`"));
+                }
+                checks.push(function.to_string());
             }
             let Some(rest) = line.trim_start().strip_prefix("pub fn f_") else { continue };
             let Some(address) = rest.get(..8).and_then(|hex| u32::from_str_radix(hex, 16).ok()) else { continue };
@@ -319,23 +401,66 @@ fn find_mods(folder: &Path) -> Result<(Vec<Mod>, BTreeSet<u32>), String> {
                 return Err(format!("mods/{name}: f_{address:08x} is replaced twice"));
             }
         }
-        files.push(Mod { file: stem.to_string(), launcher });
+        files.push(Mod { file: stem.to_string(), launcher, checks });
     }
     files.sort_by(|a, b| a.file.cmp(&b.file));
     Ok((files, overrides))
 }
 
-/// A file in `mods/`, and its launcher row, if it has one: the label, the
-/// default, and whether it's on the advanced page.
+/// A file in `mods/`, its launcher row, if it has one, and the functions it
+/// gives the launcher to check the chosen folder with.
 struct Mod {
     file: String,
-    launcher: Option<(String, bool, bool)>,
+    launcher: Option<Row>,
+    checks: Vec<String>,
 }
 
-/// The mods the launcher offers, as Rust: file name, label, whether it starts
-/// on, and whether its row is on the advanced page.
+/// The launcher checks of every mod, as Rust paths for `loader::Game::checks`.
+fn launcher_checks(mods: &[Mod]) -> String {
+    let checks = mods.iter().flat_map(|m| m.checks.iter().map(move |function| format!("mods::{}::{function}", m.file)));
+    checks.collect::<Vec<_>>().join(", ")
+}
+
+/// A mod's launcher row: its label, the values it steps through (Off and On
+/// for an On/Off row), the one it starts with, and whether it's on the
+/// advanced page.
+struct Row {
+    label: String,
+    values: Vec<String>,
+    default: usize,
+    advanced: bool,
+}
+
+/// Reads `LABEL = A | *B | C` from a `//! launcher-choice:` line: a row with
+/// several values, `*` marking the one it starts with (else the first).
+fn choice_row(text: &str) -> Result<Row, String> {
+    let (label, values) = text.split_once('=').ok_or("write a choice row as `//! launcher-choice: LABEL = A | *B | C`")?;
+    let values: Vec<&str> = values.split('|').map(str::trim).collect();
+    if values.len() < 2 || values.iter().any(|value| value.trim_start_matches('*').is_empty()) {
+        return Err("a choice row needs two or more values, none empty".into());
+    }
+    let marked: Vec<usize> = (0..values.len()).filter(|&at| values[at].starts_with('*')).collect();
+    if marked.len() > 1 {
+        return Err("mark only one value with *".into());
+    }
+    Ok(Row {
+        label: label.trim().replace('"', "'"),
+        values: values.iter().map(|value| value.trim_start_matches('*').trim().replace('"', "'")).collect(),
+        default: marked.first().copied().unwrap_or(0),
+        advanced: false,
+    })
+}
+
+/// The mods the launcher offers, as Rust `loader::ModRow`s.
 fn launcher_mods(mods: &[Mod]) -> String {
-    let rows = mods.iter().filter_map(|m| m.launcher.as_ref().map(|(label, on, advanced)| format!("(\"{}\", \"{label}\", {on}, {advanced})", m.file)));
+    let rows = mods.iter().filter_map(|m| {
+        let row = m.launcher.as_ref()?;
+        let values = row.values.iter().map(|value| format!("\"{value}\"")).collect::<Vec<_>>().join(", ");
+        Some(format!(
+            "loader::ModRow {{ file: \"{}\", label: \"{}\", values: &[{values}], default: {}, advanced: {} }}",
+            m.file, row.label, row.default, row.advanced
+        ))
+    });
     rows.collect::<Vec<_>>().join(", ")
 }
 
@@ -385,7 +510,12 @@ fn main() -> ExitCode {
     let mut problems = Vec::new();
     for argument in arguments {
         let (path, expected) = argument.rsplit_once('=').unwrap_or((&argument, ""));
-        let name = path.strip_prefix("/game/").unwrap_or(path).to_string();
+        // `NAME|PATH` reads the file from PATH and names it NAME, its place in
+        // the player's game folder, as `./port` passes every file.
+        let (name, path) = match path.split_once('|') {
+            Some((name, path)) => (name.to_string(), path),
+            None => (path.strip_prefix("/game/").unwrap_or(path).to_string(), path),
+        };
         match check_file(path, expected) {
             Ok(file) => files.push((name, expected.to_string(), file)),
             Err(problem) => problems.push(format!("  {name} {problem}")),
@@ -405,6 +535,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Callbacks from a timer came on another thread, which loops must make up for.
+    let timers = files.iter().filter_map(|(_, _, file)| pe::Image::parse(file)).any(|image| image.imports.iter().any(|import| import.name.as_deref() == Some("timeSetEvent")));
+    lift::POLLS.store(timers, std::sync::atomic::Ordering::Relaxed);
     let mut stats = lift::Stats::default();
     let mut modules = Vec::new();
     let mut chunks = Vec::new();

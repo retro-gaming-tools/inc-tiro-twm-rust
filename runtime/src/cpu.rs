@@ -283,11 +283,20 @@ impl Cpu {
         value
     }
 
+    /// Lets a timer's callback run, if one is due. Generated code calls this
+    /// on jumps backwards in games that have such timers.
+    #[inline(always)]
+    pub fn poll(&mut self) {
+        if crate::host::timers::DUE.load(std::sync::atomic::Ordering::Relaxed) {
+            crate::host::timers::run(self);
+        }
+    }
+
     pub fn hit(&mut self, address: u32) {
         *self.hits.entry(address).or_default() += 1;
         if Some(address) == self.error_function {
             let strings: Vec<String> = (1..=5).map(|i| self.r32(self.esp + i * 4)).map(|value| {
-                if (0x40_0000..0x7000_0000).contains(&value) { self.string(value) } else { format!("{value:#x}") }
+                if (0x40_0000..0x7000_0000).contains(&value) { self.string(value).chars().take(80).collect() } else { format!("{value:#x}") }
             }).collect();
             println!("game error from {:#x}: {}", self.r32(self.esp), strings.join(" | "));
         }

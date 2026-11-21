@@ -2,7 +2,7 @@
   "name": "incubation",
   "title": "Incubation",
   "needs": "the GOG release of Battle Isle: Incubation, version 1.52e",
-  "recompVersion": "0.5-beta",
+  "recompVersion": "0.6-beta",
   "recompRepo": "retro-gaming-tools/inc-tiro-twm-rust",
   "recompCommand": "Incubation.exe -english -3dfx",
   "recompPatches": [
@@ -31,5 +31,20 @@
     "ENGWLIB.DLL": "df3849404142510b050f0b458300300ec108cadeae865ef3fd8e66de559cd120",
     "ENG3DFX.DLL": "e0109d27e034c3e617c6322e19e8fa3665c2bc0e9914732833dceb308d20f016",
     "Eng3d.dll": "0bd5bd242a4a22fde5b61da55b5ba373cf5ab5fe9079a3c36804dc1b9a722b83"
+  },
+  "recompVersionNames": {
+    "Incubation.exe": "GOG release 1.52e"
+  },
+  "launcherTheme": {
+    "style": "leather",
+    "background": "17161a",
+    "panel": "1e1d21",
+    "selected": "2e2c31",
+    "border": "8e8882",
+    "text": "cecace",
+    "value": "f2ece4",
+    "good": "46c85a",
+    "bad": "e2503c",
+    "dim": "7e7872"
   }
 }

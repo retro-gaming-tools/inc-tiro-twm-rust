@@ -110,7 +110,7 @@ pub fn advance(cpu: &mut Cpu) {
     let x = (x as i32 + whole[0]).clamp(0, SCREEN_RIGHT) as u32;
     let y = (y as i32 + whole[1]).clamp(0, SCREEN_BOTTOM) as u32;
     cpu.host.pointer = (x, y);
-    cpu.host.messages.push_back((WM_MOUSEMOVE, held, x | (y << 16)));
+    cpu.host.post((WM_MOUSEMOVE, held, x | (y << 16)));
 }
 
 /// Handles a controller button going down or up.
@@ -133,7 +133,7 @@ pub fn set_button(cpu: &mut Cpu, button: u8, down: bool) {
         let pad = &mut cpu.host.pad;
         pad.held = if down { pad.held | flag } else { pad.held & !flag };
         let held = pad.held;
-        cpu.host.messages.push_back((message, held, position));
+        cpu.host.post((message, held, position));
         return;
     }
     let key = match button {
@@ -144,5 +144,5 @@ pub fn set_button(cpu: &mut Cpu, button: u8, down: bool) {
         BUTTON_DPAD_RIGHT => KEY_RIGHT,
         _ => return,
     };
-    cpu.host.messages.push_back((if down { WM_KEYDOWN } else { WM_KEYUP }, key, 0));
+    cpu.host.post((if down { WM_KEYDOWN } else { WM_KEYUP }, key, 0));
 }
