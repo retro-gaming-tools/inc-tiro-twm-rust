@@ -229,6 +229,8 @@ pub struct Search {
 
 const HEAP_START: u32 = 0x2000_0000;
 const VIRTUAL_START: u32 = 0x6000_0000;
+/// How many freed heap blocks wait before they're handed out again.
+const HEAP_QUARANTINE: usize = 4096;
 
 /// Everything the runtime keeps for the game between calls.
 pub struct State {
@@ -237,6 +239,8 @@ pub struct State {
     pub last_error: u32,
     pub heap_next: u32,
     pub free: HashMap<u32, Vec<u32>>,
+    /// Blocks freed lately, oldest first, not handed out again yet.
+    pub quarantine: VecDeque<u32>,
     pub virtual_next: u32,
     pub tls: Vec<u32>,
     pub files: HashMap<u32, OpenFile>,
@@ -303,6 +307,7 @@ impl State {
             last_error: 0,
             heap_next: HEAP_START,
             free: HashMap::new(),
+            quarantine: VecDeque::new(),
             virtual_next: VIRTUAL_START,
             tls: Vec::new(),
             files: HashMap::new(),
@@ -443,6 +448,12 @@ impl Cpu {
     pub fn allocate(&mut self, size: u32) -> u32 {
         let rounded = (size.max(1) + 15) & !15;
         if let Some(block) = self.host.free.get_mut(&rounded).and_then(|list| list.pop()) {
+            // The size asked for this time: a block of the same rounded size
+            // may have been smaller when it was first handed out, and a
+            // reallocation copies this many bytes. Stale, it cut the last
+            // entry off Drakan's save directory, which it grows 16 entries
+            // at a time, and the save didn't load.
+            self.w32(block - 12, size);
             return block;
         }
         let block = self.host.heap_next + 16;
@@ -455,8 +466,17 @@ impl Cpu {
 
     pub fn release(&mut self, block: u32) {
         if block != 0 {
-            let rounded = self.r32(block - 16);
-            self.host.free.entry(rounded).or_default().push(block);
+            // A freed block is handed out again only after this many later
+            // frees. Drakan calls methods of objects it has already freed
+            // while it shuts down, which Windows' heap tolerates because the
+            // memory keeps its contents for a while; reused at once, the next
+            // allocation overwrote the object's table and the call went to 0.
+            self.host.quarantine.push_back(block);
+            if self.host.quarantine.len() > HEAP_QUARANTINE {
+                let oldest = self.host.quarantine.pop_front().unwrap();
+                let rounded = self.r32(oldest - 16);
+                self.host.free.entry(rounded).or_default().push(oldest);
+            }
         }
     }
 
@@ -505,5 +525,56 @@ pub fn find(dll: &str, name: &str) -> Option<GuestFn> {
         "comctl32.dll" => other::find_comctl(name),
         "msvfw32.dll" => other::find_video_for_windows(name),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HEAP_QUARANTINE;
+    use crate::cpu::test_cpu;
+
+    #[test]
+    fn a_reused_block_reports_the_size_asked_this_time() {
+        let mut cpu = test_cpu();
+        let small = cpu.allocate(20);
+        assert_eq!(cpu.block_size(small), 20);
+        cpu.release(small);
+        // Push the block through the quarantine so it can be reused.
+        for _ in 0..HEAP_QUARANTINE {
+            let other = cpu.allocate(1000);
+            cpu.release(other);
+        }
+        let again = cpu.allocate(30); // same 32-byte slot, bigger request
+        assert_eq!(again, small);
+        assert_eq!(cpu.block_size(again), 30);
+    }
+
+    #[test]
+    fn a_freed_block_keeps_its_contents_until_later_frees() {
+        let mut cpu = test_cpu();
+        let object = cpu.allocate(64);
+        cpu.w32(object, 0x1234_5678);
+        cpu.release(object);
+        for _ in 0..HEAP_QUARANTINE - 1 {
+            let other = cpu.allocate(64);
+            assert_ne!(other, object, "handed out again while in quarantine");
+            cpu.w32(other, 0);
+            cpu.release(other);
+        }
+        assert_eq!(cpu.r32(object), 0x1234_5678);
+        // One more free lets the oldest block out of the quarantine.
+        let last = cpu.allocate(64);
+        cpu.release(last);
+        assert_eq!(cpu.allocate(64), object);
+    }
+
+    #[test]
+    fn blocks_are_aligned_and_do_not_overlap() {
+        let mut cpu = test_cpu();
+        let blocks: Vec<u32> = [1, 15, 16, 17, 100].iter().map(|&size| cpu.allocate(size)).collect();
+        for pair in blocks.windows(2) {
+            assert_eq!(pair[0] % 16, 0);
+            assert!(pair[1] >= pair[0] + cpu.block_size(pair[0]));
+        }
     }
 }

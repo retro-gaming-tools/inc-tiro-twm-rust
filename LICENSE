@@ -4,9 +4,10 @@ Copyright (c) 2026 the contributors of this repository
 
 This licence covers the recompiler (recompiler/), the runtime (runtime/), the
 mods (mods/), the build (build/, build.sh, regenerate.sh, changes.sh, .github/) and the
-documentation. It does not cover src/code/, which is translated from the
-original game's program files (including the Microsoft C runtime it comes
-with) and belongs to their rights holders.
+documentation. It does not cover the translated game code (src/code/, or
+programs/ in a repository with several programs), which is translated from the
+original game's program files (including the C runtime they come with) and
+belongs to their rights holders.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

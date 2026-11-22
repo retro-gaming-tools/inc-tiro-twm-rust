@@ -50,6 +50,29 @@ pub struct Cpu {
     pub error_function: Option<u32>,
 }
 
+/// A Cpu with empty guest memory and a fresh host state, for unit tests of
+/// runtime functions that read and write guest memory.
+#[cfg(test)]
+pub fn test_cpu() -> Cpu {
+    Cpu {
+        eax: 0, ecx: 0, edx: 0, ebx: 0, esp: 0x1000, ebp: 0, esi: 0, edi: 0,
+        cf: false, zf: false, sf: false, of: false, df: false, parity: 1,
+        fs_base: 0,
+        st: [0.0; 8], top: 0, c0: false, c1: false, c2: false, c3: false, fpu_control: 0x27f,
+        memory: crate::sys::reserve_memory(),
+        functions: HashMap::new(),
+        imports: Vec::new(),
+        host: Box::new(crate::host::State::new(".")),
+        trace: false,
+        trace_filter: None,
+        watched: HashMap::new(),
+        watch_counts: HashMap::new(),
+        profiling: false,
+        hits: HashMap::new(),
+        error_function: None,
+    }
+}
+
 /// How many calls of each watched export to log.
 const WATCH_LIMIT: u32 = 3;
 
@@ -317,7 +340,7 @@ impl Cpu {
             return;
         }
         let Some(&function) = self.functions.get(&address) else {
-            panic!("no recompiled code at {address:#010x}: discovery missed it");
+            panic!("no recompiled code at {address:#010x}, called from {:#x}: discovery missed it", self.r32(self.esp));
         };
         if let Some(name) = self.watched.get(&address).cloned() {
             let seen = self.watch_counts.entry(address).or_default();

@@ -2,6 +2,15 @@
 
 Newest first. Each version has a tag `v<version>`, and `./changes.sh <old> <new>` shows the full diff between two of them, such as `./changes.sh 0.4-beta 0.5-beta`.
 
+## 0.61-beta (2026-11-22)
+
+- A folder that holds only a disc image can be chosen as the game.
+- `recomp.log` beside the program records the launcher's steps and any crash, to attach to an issue. The run before's is kept as `recomp-previous.log`.
+- Fixed memory bugs that could cut data short when the game resized a block of memory, or reuse freed memory too soon.
+- The game's window messages and mouse settings behave more like Windows'.
+- The README lists the supported version, how to start and the known limits in the same form as the other ports.
+- The licence's exclusion of the translated game code is worded the same as in the other ports.
+
 ## 0.6-beta (2026-11-21)
 
 - The Glide renderer is drawn by the graphics card, through OpenGL 3.3, instead of by the CPU. The launcher's new row *3D drawn by* chooses between *GPU (OpenGL)* and *CPU*, and the program falls back to the CPU by itself where OpenGL 3.3 is missing or is only software.

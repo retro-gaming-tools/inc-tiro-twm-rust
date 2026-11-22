@@ -1,8 +1,8 @@
 1 ICON "icon.ico"
 
 1 VERSIONINFO
-FILEVERSION 0,6,0,0
-PRODUCTVERSION 0,6,0,0
+FILEVERSION 0,61,0,0
+PRODUCTVERSION 0,61,0,0
 FILEOS 0x40004
 FILETYPE 0x1
 BEGIN
@@ -13,8 +13,8 @@ BEGIN
       VALUE "CompanyName", "retro-gaming-tools"
       VALUE "FileDescription", "Incubation - Rust"
       VALUE "ProductName", "Incubation - Rust"
-      VALUE "FileVersion", "0.6-beta"
-      VALUE "ProductVersion", "0.6-beta"
+      VALUE "FileVersion", "0.61-beta"
+      VALUE "ProductVersion", "0.61-beta"
       VALUE "InternalName", "incubation-rust"
       VALUE "OriginalFilename", "incubation-rust.exe"
       VALUE "LegalCopyright", "Port: see LICENSE. Incubation belongs to its rights holders; no game data is included."

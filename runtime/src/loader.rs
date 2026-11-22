@@ -131,14 +131,27 @@ pub struct Game {
 }
 
 /// A program with no console would otherwise end without a word, so a crash
-/// leaves a log and tells the player.
+/// goes into `recomp.log` (and `recomp-crash.log` here, as before) and tells the player.
 fn report_crashes(title: &'static str) {
     std::panic::set_hook(Box::new(move |information| {
         let text = format!("{title} stopped with an error:\n\n{information}");
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        crate::runlog::line(&format!("\n{text}\n\nbacktrace:\n{backtrace}"));
         let _ = std::fs::write("recomp-crash.log", &text);
-        host::video::show_error(title, &text);
+        let text = match crate::runlog::path() {
+            Some(path) => format!("{text}\n\nPlease send this file with your report:\n{}", path.display()),
+            None => text,
+        };
+        if crate::runlog::automated() {
+            eprintln!("{text}");
+        } else {
+            host::video::show_error(title, &text);
+        }
     }));
 }
+
+#[cfg(test)]
+mod crash_tests;
 
 /// Without a path, the game folder is `game` here or beside the program, or else
 /// this folder or the program's own, for a build copied in with the game's files.
@@ -431,6 +444,7 @@ pub fn mod_from_arguments(row: &ModRow, arguments: &[String]) -> Option<usize> {
 
 /// Runs the game on a thread with a host stack deep enough for its calls.
 pub fn run(game: &'static Game) {
+    crate::runlog::start(game.title, game.version, || host::launcher::settings_folder(game));
     report_crashes(game.title);
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let mut settings = settings_from_arguments(game, &arguments);
@@ -460,6 +474,12 @@ pub fn run(game: &'static Game) {
     }
     let command: &'static str = Box::leak(command_with_choices(game, &settings).into_boxed_str());
     let Settings { mut folder, switches, mods, .. } = settings;
+    // A folder that holds only a disc image stands for that image.
+    if std::path::Path::new(&folder).is_dir() && check_files(game, &folder).is_err() {
+        if let Some(image) = host::disc::image_in(std::path::Path::new(&folder)) {
+            folder = image.display().to_string();
+        }
+    }
     // A disc image given on the command line, with no launcher to unpack it.
     if host::disc::is_image(std::path::Path::new(&folder)) {
         match unpack_image(game, std::path::Path::new(&folder), &mut |_, _| {}) {
@@ -470,7 +490,9 @@ pub fn run(game: &'static Game) {
             }
         }
     }
+    crate::runlog::line(&format!("game folder: {folder}\ncommand: {command}"));
     if let Err(text) = check_files(game, &folder) {
+        crate::runlog::line(&text);
         host::video::show_error(game.title, &text);
         std::process::exit(1);
     }

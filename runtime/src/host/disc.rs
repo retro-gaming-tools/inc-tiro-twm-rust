@@ -37,6 +37,16 @@ pub fn is_image(path: &Path) -> bool {
     path.is_file() && matches!(extension.as_str(), "iso" | "bin" | "img" | "mdf" | "cue" | "ccd")
 }
 
+/// The disc image in a folder that holds one, such as a `.bin` beside its
+/// `.cue`: the sheet first (`.cue`, then `.ccd`), since it knows the tracks,
+/// else the only image file there.
+pub fn image_in(folder: &Path) -> Option<PathBuf> {
+    let mut images: Vec<PathBuf> = std::fs::read_dir(folder).ok()?.flatten().map(|entry| entry.path()).filter(|path| is_image(path)).collect();
+    images.sort();
+    let with = |wanted: &str| images.iter().find(|path| path.extension().is_some_and(|e| e.eq_ignore_ascii_case(wanted))).cloned();
+    with("cue").or_else(|| with("ccd")).or_else(|| (images.len() == 1).then(|| images[0].clone()))
+}
+
 /// The file that holds the data: a `.cue` names it in its first FILE line, and
 /// a `.ccd` sits beside an `.img` of the same name.
 fn data_file(path: &Path) -> PathBuf {
@@ -157,4 +167,28 @@ pub fn unpack(image: &Path, target: &Path, progress: &mut dyn FnMut(u64, u64)) -
         progress(written, total);
     }
     std::fs::rename(&partial, target).map_err(failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_image_in_a_folder() {
+        let dir = std::env::temp_dir().join(format!("disc-test-image-in-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(image_in(&dir), None);
+        std::fs::write(dir.join("Game.bin"), b"").unwrap();
+        assert_eq!(image_in(&dir), Some(dir.join("Game.bin")));
+        // The sheet wins over the data it names.
+        std::fs::write(dir.join("Game.CUE"), b"").unwrap();
+        std::fs::write(dir.join("readme.txt"), b"").unwrap();
+        assert_eq!(image_in(&dir), Some(dir.join("Game.CUE")));
+        // Two images and no sheet: no guess.
+        std::fs::remove_file(dir.join("Game.CUE")).unwrap();
+        std::fs::write(dir.join("Other.iso"), b"").unwrap();
+        assert_eq!(image_in(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

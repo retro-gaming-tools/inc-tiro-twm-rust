@@ -1,5 +1,7 @@
 //! user32 and gdi32: one window, its messages, and what the game asks of GDI.
 
+use std::collections::VecDeque;
+
 use super::table;
 use crate::cpu::{Cpu, GuestFn};
 use crate::host::{audio, gamepad, script, video};
@@ -103,16 +105,37 @@ fn format(cpu: &Cpu, pattern: &str, mut next: impl FnMut(&Cpu) -> u32) -> String
     output
 }
 
-fn peek_message(cpu: &mut Cpu, at: u32, flags: u32) -> u32 {
+/// The first queued message in the range `first..=last` (both 0: any), as
+/// Windows' filter picks it, taken off the queue when `remove` is set.
+/// Drakan removes pending key messages (0x100-0x108) right after posting
+/// WM_CLOSE for its Exit; taking the front message regardless threw the
+/// WM_CLOSE away, and the game never quit.
+fn take_message(messages: &mut VecDeque<(u32, u32, u32)>, first: u32, last: u32, remove: bool) -> Option<(u32, u32, u32)> {
+    let wanted = |message: u32| (first == 0 && last == 0) || (first..=last).contains(&message);
+    let index = messages.iter().position(|&(message, _, _)| wanted(message))?;
+    if remove { messages.remove(index) } else { Some(messages[index]) }
+}
+
+/// What SystemParametersInfoA writes for an action: Windows' defaults for the
+/// mouse, SPI_GETMOUSE (3: the two acceleration thresholds and the
+/// acceleration) and SPI_GETMOUSESPEED (0x70: speed 1-20), and 0 for others.
+/// Drakan scales DirectInput mouse movement by that speed, so 0 left its menu
+/// pointer still.
+fn system_parameter(action: u32) -> &'static [u32] {
+    match action {
+        3 => &[6, 10, 1],
+        0x70 => &[10],
+        _ => &[0],
+    }
+}
+
+fn peek_message(cpu: &mut Cpu, at: u32, first: u32, last: u32, flags: u32) -> u32 {
     const REMOVE: u32 = 1;
     script::advance(cpu);
     video::pump(cpu);
     gamepad::advance(cpu);
     audio::pump(cpu);
-    let Some(&(message, wparam, lparam)) = cpu.host.messages.front() else { return 0 };
-    if flags & REMOVE != 0 {
-        cpu.host.messages.pop_front();
-    }
+    let Some((message, wparam, lparam)) = take_message(&mut cpu.host.messages, first, last, flags & REMOVE != 0) else { return 0 };
     cpu.fill(at, MSG_SIZE, 0);
     let window = cpu.host.window;
     cpu.w32(at, window);
@@ -220,12 +243,12 @@ pub fn find_user(name: &str) -> Option<GuestFn> {
             cpu.w32(at + 12, SCREEN_HEIGHT);
             1
         }
-        "PeekMessageA" 5 |cpu| { let (at, flags) = (cpu.arg(0), cpu.arg(4)); peek_message(cpu, at, flags) }
+        "PeekMessageA" 5 |cpu| { let (at, first, last, flags) = (cpu.arg(0), cpu.arg(2), cpu.arg(3), cpu.arg(4)); peek_message(cpu, at, first, last, flags) }
         // Waits for a message, and returns 0 for WM_QUIT, which ends the game's loop.
         "GetMessageA" 4 |cpu| {
             const WM_QUIT: u32 = 0x12;
-            let at = cpu.arg(0);
-            while peek_message(cpu, at, 1) == 0 {
+            let (at, first, last) = (cpu.arg(0), cpu.arg(2), cpu.arg(3));
+            while peek_message(cpu, at, first, last, 1) == 0 {
                 super::sleep(cpu, std::time::Duration::from_millis(1));
             }
             u32::from(cpu.r32(at + 4) != WM_QUIT)
@@ -282,7 +305,25 @@ pub fn find_user(name: &str) -> Option<GuestFn> {
             let (message, wparam, lparam) = (cpu.arg(1), cpu.arg(2), cpu.arg(3));
             send(cpu, message, wparam, lparam)
         }
-        "DefWindowProcA" 4 |_cpu| { 0 }
+        // As Windows' does, WM_CLOSE (0x10) destroys the window, and the game
+        // quits on the WM_DESTROY that sends: Drakan's Exit posts WM_CLOSE.
+        "DefWindowProcA" 4 |cpu| {
+            const WM_CLOSE: u32 = 0x10;
+            if cpu.arg(1) == WM_CLOSE && cpu.arg(0) == cpu.host.window {
+                send(cpu, WM_DESTROY, 0, 0);
+                send(cpu, WM_NCDESTROY, 0, 0);
+            }
+            0
+        }
+        "SystemParametersInfoA" 4 |cpu| {
+            let (action, at) = (cpu.arg(0), cpu.arg(2));
+            if at != 0 {
+                for (index, &value) in system_parameter(action).iter().enumerate() {
+                    cpu.w32(at + 4 * index as u32, value);
+                }
+            }
+            1
+        }
         "PostQuitMessage" 1 |cpu| { cpu.host.messages.push_back((0x12, cpu.arg(0), 0)); 0 }
         "BeginPaint" 2 |cpu| { let at = cpu.arg(1); cpu.fill(at, 64, 0); 0x20 }
         "EndPaint" 2 |_cpu| { 1 }
@@ -327,5 +368,57 @@ pub fn find_gdi(name: &str) -> Option<GuestFn> {
         "StretchBlt" 11 |_cpu| { 1 }
         "GetSystemPaletteEntries" 4 |_cpu| { 0 }
         "SetDIBColorTable" 4 |_cpu| { 0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{system_parameter, take_message};
+    use std::collections::VecDeque;
+
+    const WM_CLOSE: u32 = 0x10;
+    const WM_KEYDOWN: u32 = 0x100;
+    const WM_CHAR: u32 = 0x102;
+
+    fn queue() -> VecDeque<(u32, u32, u32)> {
+        VecDeque::from([(WM_KEYDOWN, 1, 0), (WM_CLOSE, 0, 0), (WM_CHAR, 2, 0)])
+    }
+
+    #[test]
+    fn no_filter_takes_the_front_message() {
+        let mut messages = queue();
+        assert_eq!(take_message(&mut messages, 0, 0, true), Some((WM_KEYDOWN, 1, 0)));
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn a_range_skips_messages_outside_it_and_keeps_them() {
+        // Drakan's key flush: WM_CLOSE in front of the keys must survive it.
+        let mut messages = VecDeque::from([(WM_CLOSE, 0, 0), (WM_KEYDOWN, 1, 0), (WM_CHAR, 2, 0)]);
+        while take_message(&mut messages, 0x100, 0x108, true).is_some() {}
+        assert_eq!(messages, VecDeque::from([(WM_CLOSE, 0, 0)]));
+    }
+
+    #[test]
+    fn a_range_finds_a_message_behind_others() {
+        let mut messages = queue();
+        assert_eq!(take_message(&mut messages, WM_CLOSE, WM_CLOSE, true), Some((WM_CLOSE, 0, 0)));
+        assert_eq!(messages, VecDeque::from([(WM_KEYDOWN, 1, 0), (WM_CHAR, 2, 0)]));
+    }
+
+    #[test]
+    fn peeking_without_remove_leaves_the_queue() {
+        let mut messages = queue();
+        assert_eq!(take_message(&mut messages, WM_CHAR, WM_CHAR, false), Some((WM_CHAR, 2, 0)));
+        assert_eq!(messages, queue());
+        assert_eq!(take_message(&mut messages, 0x200, 0x20e, true), None);
+        assert_eq!(take_message(&mut VecDeque::new(), 0, 0, true), None);
+    }
+
+    #[test]
+    fn mouse_parameters_are_windows_defaults() {
+        assert_eq!(system_parameter(3), &[6, 10, 1]);
+        assert_eq!(system_parameter(0x70), &[10]);
+        assert_eq!(system_parameter(0x2f), &[0]);
     }
 }

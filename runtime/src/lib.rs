@@ -5,6 +5,7 @@ pub mod cpu;
 pub mod host;
 pub mod loader;
 pub mod pe;
+pub mod runlog;
 pub mod sys;
 
 pub use cpu::{Cpu, GuestFn};

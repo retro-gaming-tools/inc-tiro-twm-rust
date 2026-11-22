@@ -26,7 +26,8 @@ Source and releases: https://github.com/retro-gaming-tools/inc-tiro-twm-rust
 
 What you need
 -------------
-- Battle Isle: Incubation from GOG (the main menu shows version 1.52e).
+- Battle Isle: Incubation from GOG (the main menu shows version 1.52e,
+  or 1.52d with German texts: the letter is the language).
   Other versions are not supported yet. No game data is included in this download.
 - A 64-bit Windows or Linux PC. The 3D view is drawn by the graphics card if
   it has OpenGL 3.3, and otherwise on the CPU, where a reasonably fast CPU

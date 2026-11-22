@@ -2,7 +2,7 @@
   "name": "incubation",
   "title": "Incubation",
   "needs": "the GOG release of Battle Isle: Incubation, version 1.52e",
-  "recompVersion": "0.6-beta",
+  "recompVersion": "0.61-beta",
   "recompRepo": "retro-gaming-tools/inc-tiro-twm-rust",
   "recompCommand": "Incubation.exe -english -3dfx",
   "recompPatches": [

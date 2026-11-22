@@ -1,27 +1,23 @@
 Incubation Recompiled: Battle Isle: Incubation (Blue Byte, 1997) as a native Windows and Linux program, translated statically from the original into Rust, on a runtime built on SDL3. The coding was done by AI (Claude, by Anthropic). The testing was done by a human.
 
-**You need Battle Isle: Incubation from GOG** (the main menu shows version 1.52e). No game data is included.
+**You need Battle Isle: Incubation from GOG** (the main menu shows version 1.52e, or 1.52d with German texts). No game data is included.
 
-## Changes in 0.6-beta
+## Changes in 0.61-beta
 
-- The Glide renderer is drawn by the graphics card, through OpenGL 3.3, instead of by the CPU. The launcher's new row *3D drawn by* chooses between *GPU (OpenGL)* and *CPU*, and the program falls back to the CPU by itself where OpenGL 3.3 is missing or is only software.
-- The launcher has a second page, *Advanced settings*, for what the defaults get right for nearly everyone: *3D drawn by* and *Renderer*. The first page keeps the folder, resolution, display, language and game options.
-- The launcher has a new look, in the dark leather and metal of the game's own menus.
-- A *Frame rate* row in the launcher: *30* (the default, evenly paced), *60* in missions (experimental: animations run twice as fast) or *Original*. It replaces *Smooth frame pacing*; old settings read as 30.
-- **F9** in missions and on the map steps the frame rate through 30, 60 and Original, with a short note saying which.
-- The question before "Give up!" is drawn in the game's own fonts and load-and-save window.
-- The launcher warns when the English texts are German, as the German fan patch leaves them.
-- The mouse stays inside the window while playing, and the game starts in fullscreen unless the launcher's Display row says Window.
-- The README lists the keys in the game: **F11** for fullscreen or a window, **F10** (or RB) for the frame counter, **F9** for the frame rate.
-- The program shows its version in its Windows file properties.
+- A folder that holds only a disc image can be chosen as the game.
+- `recomp.log` beside the program records the launcher's steps and any crash, to attach to an issue. The run before's is kept as `recomp-previous.log`.
+- Fixed memory bugs that could cut data short when the game resized a block of memory, or reuse freed memory too soon.
+- The game's window messages and mouse settings behave more like Windows'.
+- The README lists the supported version, how to start and the known limits in the same form as the other ports.
+- The licence's exclusion of the translated game code is worded the same as in the other ports.
 
 The full history is in `CHANGELOG.md`.
 
 ## Downloads
 
-- `incubation-rust-0.6-beta-windows-x64.zip`: unzip anywhere and start `incubation-rust.exe`. Windows may warn that the program is from an unknown publisher, because it isn't code-signed: choose "More info", then "Run anyway".
-- `incubation-rust-0.6-beta-linux-x64.AppImage`: make it executable and start it.
-- `incubation-rust-0.6-beta-SHA256SUMS.txt`: checksums of both.
+- `incubation-rust-0.61-beta-windows-x64.zip`: unzip anywhere and start `incubation-rust.exe`. Windows may warn that the program is from an unknown publisher, because it isn't code-signed: choose "More info", then "Run anyway".
+- `incubation-rust-0.61-beta-linux-x64.AppImage`: make it executable and start it.
+- `incubation-rust-0.61-beta-SHA256SUMS.txt`: checksums of both.
 
 Choose your game folder in the launcher, or drop the folder onto its window.
 
@@ -37,13 +33,13 @@ Choose your game folder in the launcher, or drop the folder onto its window.
 
 ## Status
 
-This is a beta. Tested on Windows and Linux: the menus, the map, the first missions and a sample of later missions. Not every mission has been played through, so please report bugs in the issues. The picture is 4:3.
+This is a beta. The picture is 4:3. If something doesn't work, please open an issue and attach `recomp.log` from beside the program.
 
 ## Checking these files
 
 GitHub built these files from the tagged source with `./build.sh`, in the workflow run linked to this release. Each file has a provenance attestation:
 
-    gh attestation verify incubation-rust-0.6-beta-linux-x64.AppImage --repo retro-gaming-tools/inc-tiro-twm-rust
+    gh attestation verify incubation-rust-0.61-beta-linux-x64.AppImage --repo retro-gaming-tools/inc-tiro-twm-rust
 
 You can also build the release yourself with `./build.sh`, and check the translated code against your own copy of the game with `./regenerate.sh /path/to/the/game`.
 
